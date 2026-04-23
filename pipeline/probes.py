@@ -1,5 +1,6 @@
 """Per-layer logistic-regression probes for CoT->answer suppression."""
 import json
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -11,6 +12,7 @@ def load_examples(
     dataset_path: str = "data/dataset.jsonl",
     runs_path: str = "data/runs.jsonl",
     labels_path: str = "data/labels.jsonl",
+    probe_location: str = "answer_first",
 ) -> tuple[list[dict], list[dict]]:
     """Join dataset + runs + labels; apply inclusion filter.
 
@@ -50,15 +52,18 @@ def load_examples(
                 "run_id": run_id,
                 "question_id": qid,
                 "hint_type": "none",
-                "activation_path": run["activation_path"],
+                "activation_path": run["activation_paths"][probe_location],
             })
             continue
 
+        if qid not in dataset:
+            stats["not_influenced"] += 1
+            continue
         target = dataset[qid]["target"]
         a_base = baseline_answers.get(qid)
         a_hint = label["answer"]
 
-        if a_hint != target or a_hint == a_base:
+        if a_base is None or a_hint != target or a_hint == a_base:
             stats["not_influenced"] += 1
             continue
 
@@ -71,9 +76,18 @@ def load_examples(
             "run_id": run_id,
             "question_id": qid,
             "hint_type": run["hint_type"],
-            "activation_path": run["activation_path"],
+            "activation_path": run["activation_paths"][probe_location],
             "label": int(not label["hint_acknowledged_in_answer"]),
         })
+
+    def _has_activation(entry: dict) -> bool:
+        if not Path(entry["activation_path"]).exists():
+            print(f"  warning: missing activation {entry['activation_path']}, skipping")
+            return False
+        return True
+
+    examples = [e for e in examples if _has_activation(e)]
+    baselines = [b for b in baselines if _has_activation(b)]
 
     print(f"Filter stats: {stats}")
     class_counts: dict[int, int] = {}
@@ -92,12 +106,15 @@ def train_per_layer_probes(
     C: float = 1.0,
 ) -> dict:
     """Train 49 per-layer logistic regression probes. Returns results dict."""
-    if len(examples) < 4:
-        print(f"Only {len(examples)} examples — too few for train/test split. "
-              "Returning empty results.")
+    unique_question_ids = {ex["question_id"] for ex in examples}
+    if len(examples) < 4 or len(unique_question_ids) < 2:
+        reason = (f"only {len(examples)} examples"
+                  if len(examples) < 4
+                  else f"only {len(unique_question_ids)} unique question(s)")
+        print(f"{reason} — too few for train/test split. Returning empty results.")
         return {"per_layer": [], "n_examples": len(examples),
                 "n_baselines": len(baselines),
-                "error": "insufficient examples for train/test split"}
+                "error": f"insufficient data: {reason}"}
 
     X_all = []
     y_all = []

@@ -36,6 +36,7 @@ def run_inference(
     max_new_tokens: int = 8192,
     device: str = "mps",
     limit: int | None = None,
+    run_timeout: int = 600,
 ) -> None:
     if hint_types is None:
         hint_types = list(ALL_HINT_TYPES)
@@ -84,6 +85,7 @@ def run_inference(
                     activations_dir=act_dir,
                     model_id=model_id,
                     max_new_tokens=max_new_tokens,
+                    run_timeout=run_timeout,
                 )
             except Exception as e:
                 print(f"[{done}/{total}] ERROR {run_id}: {type(e).__name__}: {e}")
@@ -110,6 +112,8 @@ def main():
     ap.add_argument("--device", default="mps")
     ap.add_argument("--limit", type=int, default=None,
                     help="Stop after this many fresh runs (skipped runs don't count).")
+    ap.add_argument("--run-timeout", type=int, default=600,
+                    help="Skip any single run that takes longer than this (seconds).")
     args = ap.parse_args()
 
     run_inference(
@@ -121,6 +125,7 @@ def main():
         max_new_tokens=args.max_new_tokens,
         device=args.device,
         limit=args.limit,
+        run_timeout=args.run_timeout,
     )
 
 

@@ -26,6 +26,7 @@ def run_pipeline(
     labels_out: str | None = None,
     inference_limit: int | None = None,
     judge_limit: int | None = None,
+    run_timeout: int | None = None,
     results_out: str | None = None,
     probe_C: float | None = None,
 ) -> None:
@@ -44,6 +45,7 @@ def run_pipeline(
         max_new_tokens=max_new_tokens,
         device=device,
         limit=inference_limit,
+        run_timeout=run_timeout,
     ))
 
     print("\n=== Stage 3/4: run judges ===")
@@ -82,6 +84,8 @@ def main():
     ap.add_argument("--labels-out", default=None)
     ap.add_argument("--judge-limit", type=int, default=None,
                     help="Stop judging after this many fresh judgements.")
+    ap.add_argument("--run-timeout", type=int, default=None,
+                    help="Skip any single inference run taking longer than this (seconds).")
     ap.add_argument("--results-out", default=None)
     ap.add_argument("--probe-C", type=float, default=None)
     args = ap.parse_args()
@@ -100,6 +104,7 @@ def main():
         labels_out=args.labels_out,
         inference_limit=args.inference_limit,
         judge_limit=args.judge_limit,
+        run_timeout=args.run_timeout,
         results_out=args.results_out,
         probe_C=args.probe_C,
     )

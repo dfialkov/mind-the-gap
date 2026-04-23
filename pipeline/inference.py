@@ -1,11 +1,24 @@
 """One-run inference: generate, locate probe position, capture activations."""
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 import torch
+from transformers import StoppingCriteria, StoppingCriteriaList
 
 from pipeline.hints import build_user_message
+
+PROBE_LOCATIONS = ("think_first", "think_mid", "think_last", "answer_first")
+
+
+class _TimeLimitCriteria(StoppingCriteria):
+    def __init__(self, max_seconds: int):
+        self.max_seconds = max_seconds
+        self.start = time.monotonic()
+
+    def __call__(self, input_ids, scores, **kwargs):
+        return (time.monotonic() - self.start) > self.max_seconds
 
 
 def _find_probe_position(new_ids: torch.Tensor, tokenizer, end_think_id: int):
@@ -20,19 +33,24 @@ def _find_probe_position(new_ids: torch.Tensor, tokenizer, end_think_id: int):
     return end_pos, None
 
 
-def _capture_activations(model, full_ids: torch.Tensor, target_idx: int) -> torch.Tensor:
-    """Second forward pass; forward hooks capture one position per layer, cast bf16.
+def _capture_activations(
+    model, full_ids: torch.Tensor, target_indices: dict[str, int],
+) -> dict[str, torch.Tensor]:
+    """Single forward pass; capture multiple positions per layer, cast bf16.
 
-    Returns tensor of shape (n_hidden_states, hidden_size) where n_hidden_states
-    = 1 (embedding) + num_decoder_layers.
+    target_indices: {location_name: absolute_token_index}
+    Returns {location_name: tensor of shape (n_hidden_states, hidden_size)}.
     """
     num_layers = len(model.model.layers)
-    captured: dict[int, torch.Tensor] = {}
+    captured: dict[str, dict[int, torch.Tensor]] = {n: {} for n in target_indices}
 
-    def make_hook(idx: int):
+    def make_hook(layer_idx: int):
         def hook(_module, _input, output):
             h = output[0] if isinstance(output, tuple) else output
-            captured[idx] = h[0, target_idx, :].detach().to("cpu", dtype=torch.bfloat16)
+            for name, idx in target_indices.items():
+                captured[name][layer_idx] = (
+                    h[0, idx, :].detach().to("cpu", dtype=torch.bfloat16)
+                )
         return hook
 
     handles = [model.model.embed_tokens.register_forward_hook(make_hook(0))]
@@ -46,7 +64,10 @@ def _capture_activations(model, full_ids: torch.Tensor, target_idx: int) -> torc
         for h in handles:
             h.remove()
 
-    return torch.stack([captured[i] for i in range(num_layers + 1)], dim=0)
+    return {
+        name: torch.stack([captured[name][i] for i in range(num_layers + 1)], dim=0)
+        for name in target_indices
+    }
 
 
 def _save_tensor_atomic(tensor: torch.Tensor, path: Path) -> None:
@@ -67,6 +88,7 @@ def run_single(
     max_new_tokens: int = 8192,
     temperature: float = 0.6,
     top_p: float = 0.95,
+    run_timeout: int = 600,
 ) -> dict | None:
     """One (question, hint) inference. Returns run dict, or None if </think> missing."""
     device = next(model.parameters()).device
@@ -78,6 +100,7 @@ def run_single(
     input_ids = tokenizer(prompt_text, return_tensors="pt").input_ids.to(device)
     prompt_len = input_ids.shape[1]
 
+    stopping = StoppingCriteriaList([_TimeLimitCriteria(run_timeout)])
     with torch.no_grad():
         gen = model.generate(
             input_ids,
@@ -86,20 +109,33 @@ def run_single(
             temperature=temperature,
             top_p=top_p,
             pad_token_id=tokenizer.eos_token_id,
+            stopping_criteria=stopping,
         )
 
     new_ids = gen[0, prompt_len:]
-    end_pos_rel, probe_pos_rel = _find_probe_position(new_ids, tokenizer, end_think_id)
-    if end_pos_rel is None or probe_pos_rel is None:
+    end_pos_rel, answer_pos_rel = _find_probe_position(new_ids, tokenizer, end_think_id)
+    if end_pos_rel is None or answer_pos_rel is None or end_pos_rel < 1:
         return None
 
-    probe_target_idx = prompt_len + probe_pos_rel
-    end_think_idx = prompt_len + end_pos_rel
+    think_first_rel = 0
+    think_last_rel = end_pos_rel - 1
+    think_mid_rel = (think_first_rel + think_last_rel) // 2
 
-    act = _capture_activations(model, gen, probe_target_idx)
+    target_indices = {
+        "think_first": prompt_len + think_first_rel,
+        "think_mid": prompt_len + think_mid_rel,
+        "think_last": prompt_len + think_last_rel,
+        "answer_first": prompt_len + answer_pos_rel,
+    }
 
-    act_path = activations_dir / f"{record['question_id']}-{hint_type}.pt"
-    _save_tensor_atomic(act, act_path)
+    activations = _capture_activations(model, gen, target_indices)
+
+    stem = f"{record['question_id']}-{hint_type}"
+    activation_paths = {}
+    for loc, act in activations.items():
+        act_path = activations_dir / f"{loc}-{stem}.pt"
+        _save_tensor_atomic(act, act_path)
+        activation_paths[loc] = str(act_path)
 
     generated_text = tokenizer.decode(new_ids, skip_special_tokens=False)
     thinking, _, response = generated_text.partition("</think>")
@@ -110,10 +146,8 @@ def run_single(
         "hint_type": hint_type,
         "thinking": thinking,
         "response": response,
-        "end_think_pos": end_think_idx,
-        "probe_target_pos": probe_target_idx,
-        "activation_path": str(act_path),
-        "activation_shape": list(act.shape),
+        "probe_positions": {k: v for k, v in target_indices.items()},
+        "activation_paths": activation_paths,
         "model_id": model_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }

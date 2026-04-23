@@ -2,6 +2,7 @@
 import argparse
 import json
 
+from pipeline.inference import PROBE_LOCATIONS
 from pipeline.probes import load_examples, train_per_layer_probes
 
 
@@ -13,11 +14,18 @@ def train_probes(
     seed: int = 103,
     C: float = 1.0,
 ) -> None:
-    examples, baselines = load_examples(dataset_path, runs_path, labels_path)
-    results = train_per_layer_probes(examples, baselines, seed=seed, C=C)
+    all_results = {}
+    for loc in PROBE_LOCATIONS:
+        print(f"\n=== Probe location: {loc} ===")
+        examples, baselines = load_examples(
+            dataset_path, runs_path, labels_path, probe_location=loc,
+        )
+        all_results[loc] = train_per_layer_probes(
+            examples, baselines, seed=seed, C=C,
+        )
 
     with open(results_out, "w") as f:
-        json.dump(results, f, indent=2)
+        json.dump(all_results, f, indent=2)
     print(f"\nResults written to {results_out}")
 
 
