@@ -1,6 +1,7 @@
 """Iterate over (question, hint_type) pairs; skip completed runs; append to runs.jsonl."""
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -8,7 +9,17 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from pipeline.hints import ALL_HINT_TYPES
-from pipeline.inference import run_single
+from pipeline.inference import run_single, PROBE_LOCATIONS
+
+
+def _fmt_duration(seconds: float) -> str:
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    if seconds < 3600:
+        return f"{seconds / 60:.0f}m{int(seconds) % 60:02d}s"
+    h, rem = divmod(int(seconds), 3600)
+    m = rem // 60
+    return f"{h}h{m:02d}m"
 
 
 def load_existing_run_ids(path: Path) -> set:
@@ -61,19 +72,53 @@ def run_inference(
         raise RuntimeError("Tokenizer has no </think> token id — wrong model?")
     print(f"end_think_id = {end_think_id}")
 
+    print("Preflight: verifying chat template and generation...")
+    preflight_msg = [{"role": "user", "content": "What is 2+2? Answer with a single letter."}]
+    preflight_prompt = tokenizer.apply_chat_template(
+        preflight_msg, tokenize=False, add_generation_prompt=True,
+    )
+    if "<think>" not in preflight_prompt:
+        raise RuntimeError(
+            f"Chat template does not include <think> in generation prompt. "
+            f"Template tail: ...{preflight_prompt[-80:]!r}"
+        )
+    preflight_ids = tokenizer(preflight_prompt, return_tensors="pt").input_ids.to(device)
+    with torch.no_grad():
+        preflight_gen = model.generate(
+            preflight_ids, max_new_tokens=256,
+            do_sample=False, pad_token_id=tokenizer.eos_token_id,
+        )
+    preflight_new = preflight_gen[0, preflight_ids.shape[1]:]
+    preflight_text = tokenizer.decode(preflight_new, skip_special_tokens=False)
+    if "</think>" not in preflight_text:
+        raise RuntimeError(
+            f"Preflight generation did not produce </think>. "
+            f"Output: {preflight_text[:200]!r}"
+        )
+    think_part, _, answer_part = preflight_text.partition("</think>")
+    print(f"Preflight passed: think={len(think_part)} chars, "
+          f"answer={answer_part.strip()[:50]!r}")
+
     total = len(dataset) * len(hint_types)
     done = 0
     fresh = 0
+    n_ok = 0
+    n_skipped_existing = 0
+    n_skipped_no_think = 0
+    n_errors = 0
+    run_times: list[float] = []
+    t_start = time.time()
+
     for record in dataset:
         for hint_type in hint_types:
             done += 1
             run_id = f"{record['question_id']}__{hint_type}"
             if run_id in existing:
-                print(f"[{done}/{total}] skip {run_id} (already done)")
+                n_skipped_existing += 1
                 continue
             if limit is not None and fresh >= limit:
                 print(f"--limit {limit} reached, stopping.")
-                return
+                break
             try:
                 t0 = time.time()
                 result = run_single(
@@ -88,17 +133,34 @@ def run_inference(
                     run_timeout=run_timeout,
                 )
             except Exception as e:
+                n_errors += 1
                 print(f"[{done}/{total}] ERROR {run_id}: {type(e).__name__}: {e}")
                 continue
+            dt = time.time() - t0
             if result is None:
-                print(f"[{done}/{total}] skip {run_id} (no </think> in output)")
+                n_skipped_no_think += 1
+                print(f"[{done}/{total}] skip {run_id} (no </think>, {dt:.0f}s)")
                 continue
             with open(runs_path, "a") as f:
                 f.write(json.dumps(result) + "\n")
             existing.add(run_id)
             fresh += 1
-            dt = time.time() - t0
-            print(f"[{done}/{total}] {run_id} ({dt:.1f}s)")
+            n_ok += 1
+            run_times.append(dt)
+            avg = sum(run_times) / len(run_times)
+            remaining = total - done
+            eta = _fmt_duration(remaining * avg) if run_times else "?"
+            elapsed = _fmt_duration(time.time() - t_start)
+            print(f"[{done}/{total}] {run_id} ({dt:.1f}s) "
+                  f"| avg={avg:.0f}s elapsed={elapsed} eta={eta}",
+                  flush=True)
+        else:
+            continue
+        break
+
+    elapsed = _fmt_duration(time.time() - t_start)
+    print(f"\nInference done: {n_ok} ok, {n_skipped_no_think} no-think, "
+          f"{n_errors} errors, {n_skipped_existing} already done | {elapsed}")
 
 
 def main():

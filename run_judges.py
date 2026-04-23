@@ -2,14 +2,27 @@
 import argparse
 import json
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from anthropic import Anthropic
+from anthropic import Anthropic, APIStatusError, RateLimitError
 from dotenv import load_dotenv
 
 from pipeline.hints import HINTS
 from pipeline.judges import JUDGE_MODEL, judge_run
+
+MAX_RETRIES = 6
+
+
+def _fmt_duration(seconds: float) -> str:
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    if seconds < 3600:
+        return f"{seconds / 60:.0f}m{int(seconds) % 60:02d}s"
+    h, rem = divmod(int(seconds), 3600)
+    m = rem // 60
+    return f"{h}h{m:02d}m"
 
 
 def hint_text_for(record: dict, hint_type: str) -> str:
@@ -65,25 +78,57 @@ def run_judges(
 
     total = len(runs)
     fresh = 0
+    n_ok = 0
+    n_skipped = 0
+    n_errors = 0
+    t_start = time.time()
+
     for i, run in enumerate(runs, 1):
         run_id = run["run_id"]
         if run_id in existing:
-            print(f"[{i}/{total}] skip {run_id} (already judged)")
+            n_skipped += 1
             continue
         if limit is not None and fresh >= limit:
             print(f"--limit {limit} reached, stopping.")
-            return
+            break
 
         record = records.get(run["question_id"])
         if record is None:
+            n_errors += 1
             print(f"[{i}/{total}] ERROR {run_id}: question not in dataset")
             continue
         hint_text = hint_text_for(record, run["hint_type"])
 
-        try:
-            judgement = judge_run(client, hint_text, run["thinking"], run["response"])
-        except Exception as e:
-            print(f"[{i}/{total}] ERROR {run_id}: {type(e).__name__}: {e}")
+        judgement = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                judgement = judge_run(
+                    client, hint_text, run["thinking"], run["response"],
+                )
+                break
+            except RateLimitError:
+                wait = 2 ** attempt
+                print(f"[{i}/{total}] {run_id}: rate limited, "
+                      f"retry {attempt + 1}/{MAX_RETRIES} in {wait}s...",
+                      flush=True)
+                time.sleep(wait)
+            except APIStatusError as e:
+                if e.status_code in (500, 529):
+                    wait = 2 ** attempt
+                    print(f"[{i}/{total}] {run_id}: server error {e.status_code}, "
+                          f"retry {attempt + 1}/{MAX_RETRIES} in {wait}s...",
+                          flush=True)
+                    time.sleep(wait)
+                else:
+                    raise
+            except Exception as e:
+                n_errors += 1
+                print(f"[{i}/{total}] ERROR {run_id}: {type(e).__name__}: {e}")
+                break
+        if judgement is None:
+            if attempt == MAX_RETRIES - 1:
+                n_errors += 1
+                print(f"[{i}/{total}] FAILED {run_id}: max retries exceeded")
             continue
 
         label = {
@@ -96,12 +141,23 @@ def run_judges(
             f.write(json.dumps(label) + "\n")
         existing.add(run_id)
         fresh += 1
+        n_ok += 1
+        elapsed = _fmt_duration(time.time() - t_start)
+        remaining = total - i
+        avg = (time.time() - t_start) / n_ok if n_ok else 0
+        eta = _fmt_duration(remaining * avg) if n_ok else "?"
         print(
             f"[{i}/{total}] {run_id} "
             f"cot={judgement['hint_acknowledged_in_cot']} "
             f"ans={judgement['hint_acknowledged_in_answer']} "
-            f"pick={judgement['answer']}"
+            f"pick={judgement['answer']} "
+            f"| elapsed={elapsed} eta={eta}",
+            flush=True,
         )
+
+    elapsed = _fmt_duration(time.time() - t_start)
+    print(f"\nJudging done: {n_ok} ok, {n_errors} errors, "
+          f"{n_skipped} already done | {elapsed}")
 
 
 def main():
