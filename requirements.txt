@@ -3,3 +3,5 @@ transformers>=4.51
 accelerate
 gradio
 datasets
+anthropic
+python-dotenv

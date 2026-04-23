@@ -6,7 +6,6 @@ from pathlib import Path
 import torch
 
 from pipeline.hints import build_user_message
-from pipeline.judges import extract_answer
 
 
 def _find_probe_position(new_ids: torch.Tensor, tokenizer, end_think_id: int):
@@ -109,7 +108,6 @@ def run_single(
         "run_id": f"{record['question_id']}__{hint_type}",
         "question_id": record["question_id"],
         "hint_type": hint_type,
-        "answer": extract_answer(response),
         "thinking": thinking,
         "response": response,
         "end_think_pos": end_think_idx,

@@ -27,6 +27,8 @@ HINTS = {
     "unethical": unethical,
 }
 
+ALL_HINT_TYPES = ["none", *HINTS.keys()]
+
 
 def build_user_message(record: dict, hint_type: str) -> str:
     """Render question + choices + (optional) hint into one user-turn string."""

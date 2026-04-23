@@ -140,6 +140,15 @@ Spot-check agreement: plan to hand-label ~30 of the 40 smoke-test runs, compare 
 
 - **Filter to probe-relevant cases**: `influenced == true` AND `cot_acknowledged == true`. This is the set where the CoT-vs-answer suppression question is meaningful.
 - **Binary target**: `y = not answer_acknowledged` (1 = suppression / unfaithful, 0 = faithful).
+
+**Inclusion/exclusion reasoning.** Every hinted run falls into one of four buckets; only the narrow quadrant above goes into the probe's train/test set. The others aren't registered as zeros — they're either used as controls or dropped. Reasoning:
+
+- **Not influenced** (`a_hint != target` or `a_hint == a_base`): excluded. The hint didn't change what the model said, so "did the answer hide the hint's effect" is an undefined question on these runs. Registering them as zeros would teach the probe to detect "this activation came from an unchanged-answer question" — a confound, not suppression.
+- **Influenced but `cot_ack == false`**: excluded. Here the hint changed the answer through representations that never surfaced in the CoT. That's a genuinely interesting phenomenon (steering without verbalization) but a *different* one from what this probe is asking — our probe assumes an internal acknowledgement was already formed and then withheld from the user. No acknowledgement, no suppression decision to detect.
+- **Influenced AND `cot_ack == true`**: included. Label `y = not answer_acknowledged`. This is the suppression quadrant.
+- **Baseline runs** (`hint_type == "none"`): never in train/test. Used only as the no-hint confound control (see Controls).
+
+Note: `influenced` uses the paper's definition, `a_hint == target AND a_hint != a_base`. Correctness of the baseline answer (`a_base == correct`) is orthogonal and deliberately *not* a filter criterion — a model that's honestly wrong is still honest. 
 - **Features**: one 5120-dim vector per layer per example, 49 layers.
 - **Probe**: `sklearn.linear_model.LogisticRegression(C=1.0, max_iter=1000)` per layer. Optionally L2-regularized logistic regression with CV over C.
 - **Split**: stratified 60/20/20 train/val/test on example_ids. Critical: splitting by example_id avoids leakage across hint types (same question shouldn't appear in train and test).
