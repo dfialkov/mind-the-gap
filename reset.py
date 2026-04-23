@@ -8,6 +8,7 @@ ARTIFACTS = [
     Path("data/runs.jsonl"),
     Path("data/labels.jsonl"),
     Path("data/activations"),
+    Path("data/probe_results.json"),
 ]
 
 

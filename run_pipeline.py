@@ -4,6 +4,7 @@ import argparse
 from build_dataset import build_dataset_file
 from run_inference import run_inference
 from run_judges import run_judges
+from train_probes import train_probes
 
 
 def _kw(**kwargs):
@@ -25,13 +26,15 @@ def run_pipeline(
     labels_out: str | None = None,
     inference_limit: int | None = None,
     judge_limit: int | None = None,
+    results_out: str | None = None,
+    probe_C: float | None = None,
 ) -> None:
-    print("=== Stage 1/3: build dataset ===")
+    print("=== Stage 1/4: build dataset ===")
     build_dataset_file(**_kw(
         n_mmlu=n_mmlu, n_gpqa=n_gpqa, seed=seed, out=dataset_path,
     ))
 
-    print("\n=== Stage 2/3: run inference ===")
+    print("\n=== Stage 2/4: run inference ===")
     run_inference(**_kw(
         model_id=model_id,
         hint_types=hint_types,
@@ -43,12 +46,22 @@ def run_pipeline(
         limit=inference_limit,
     ))
 
-    print("\n=== Stage 3/3: run judges ===")
+    print("\n=== Stage 3/4: run judges ===")
     run_judges(**_kw(
         runs_path=runs_out,
         dataset_path=dataset_path,
         labels_out=labels_out,
         limit=judge_limit,
+    ))
+
+    print("\n=== Stage 4/4: train probes ===")
+    train_probes(**_kw(
+        dataset_path=dataset_path,
+        runs_path=runs_out,
+        labels_path=labels_out,
+        results_out=results_out,
+        seed=seed,
+        C=probe_C,
     ))
 
 
@@ -69,6 +82,8 @@ def main():
     ap.add_argument("--labels-out", default=None)
     ap.add_argument("--judge-limit", type=int, default=None,
                     help="Stop judging after this many fresh judgements.")
+    ap.add_argument("--results-out", default=None)
+    ap.add_argument("--probe-C", type=float, default=None)
     args = ap.parse_args()
 
     run_pipeline(
@@ -85,6 +100,8 @@ def main():
         labels_out=args.labels_out,
         inference_limit=args.inference_limit,
         judge_limit=args.judge_limit,
+        results_out=args.results_out,
+        probe_C=args.probe_C,
     )
 
 
