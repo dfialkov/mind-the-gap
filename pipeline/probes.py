@@ -140,13 +140,9 @@ def train_per_layer_probes(
     rng.shuffle(unique_qids)
 
     n = len(unique_qids)
-    n_train = max(1, int(n * 0.6))
-    n_val = max(1, int(n * 0.2))
+    n_train = max(1, int(n * 0.75))
     train_qids = set(unique_qids[:n_train])
-    val_qids = set(unique_qids[n_train:n_train + n_val])
-    test_qids = set(unique_qids[n_train + n_val:])
-    if not test_qids:
-        test_qids = val_qids
+    test_qids = set(unique_qids[n_train:])
 
     train_mask = np.array([q in train_qids for q in qids])
     test_mask = np.array([q in test_qids for q in qids])

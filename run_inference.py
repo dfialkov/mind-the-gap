@@ -39,7 +39,7 @@ def load_existing_run_ids(path: Path) -> set:
 
 
 def run_inference(
-    model_id: str = "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",
+    model_id: str = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
     hint_types: list[str] | None = None,
     dataset_path: str = "data/dataset.jsonl",
     runs_out: str = "data/runs.jsonl",
@@ -165,7 +165,7 @@ def run_inference(
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="deepseek-ai/DeepSeek-R1-Distill-Qwen-14B")
+    ap.add_argument("--model", default="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
     ap.add_argument("--hint-types", nargs="+", default=list(ALL_HINT_TYPES))
     ap.add_argument("--dataset", default="data/dataset.jsonl")
     ap.add_argument("--runs-out", default="data/runs.jsonl")
