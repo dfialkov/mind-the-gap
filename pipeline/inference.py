@@ -109,12 +109,14 @@ def run_single(
     gen_config.max_new_tokens = max_new_tokens
     gen_config.pad_token_id = tokenizer.eos_token_id
 
+    t0 = time.monotonic()
     with torch.no_grad():
         gen = model.generate(
             input_ids,
             generation_config=gen_config,
             stopping_criteria=stopping,
         )
+    t_gen = time.monotonic() - t0
 
     new_ids = gen[0, prompt_len:]
     end_pos_rel, answer_pos_rel = _find_probe_position(new_ids, tokenizer, end_think_id)
@@ -132,7 +134,11 @@ def run_single(
         "answer_first": prompt_len + answer_pos_rel,
     }
 
+    t1 = time.monotonic()
     activations = _capture_activations(model, gen, target_indices)
+    t_act = time.monotonic() - t1
+    print(f"  timing: generate={t_gen:.1f}s, activations={t_act:.1f}s, "
+          f"seq_len={gen.shape[1]}, new_tokens={len(new_ids)}")
 
     stem = f"{record['question_id']}-{hint_type}"
     activation_paths = {}
