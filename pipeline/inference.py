@@ -150,6 +150,7 @@ def run_single(
         "hint_type": hint_type,
         "thinking": thinking,
         "response": response,
+        "n_tokens": len(new_ids),
         "probe_positions": {k: v for k, v in target_indices.items()},
         "activation_paths": activation_paths,
         "model_id": model_id,

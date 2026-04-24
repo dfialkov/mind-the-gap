@@ -156,7 +156,8 @@ def run_inference(
             remaining = total - done
             eta = _fmt_duration(remaining * avg) if run_times else "?"
             elapsed = _fmt_duration(time.time() - t_start)
-            print(f"[{done}/{total}] {run_id} ({dt:.1f}s) "
+            n_tok = result.get("n_tokens", "?")
+            print(f"[{done}/{total}] {run_id} ({dt:.1f}s, {n_tok} tok) "
                   f"| avg={avg:.0f}s elapsed={elapsed} eta={eta}",
                   flush=True)
         else:
