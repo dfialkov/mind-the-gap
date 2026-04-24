@@ -1,8 +1,11 @@
 """Iterate over (question, hint_type) pairs; skip completed runs; append to runs.jsonl."""
 import argparse
 import json
+import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from pathlib import Path
 
 import torch
@@ -49,7 +52,18 @@ def run_inference(
     limit: int | None = None,
     run_timeout: int = 600,
     backend: str = "hf",
+    generations_out: str = "data/generations.jsonl",
+    api_base: str | None = None,
+    concurrency: int = 32,
 ) -> None:
+    if backend == "api":
+        return _run_inference_api(
+            model_id=model_id, hint_types=hint_types,
+            dataset_path=dataset_path,
+            generations_out=generations_out,
+            max_new_tokens=max_new_tokens, limit=limit,
+            api_base=api_base, concurrency=concurrency,
+        )
     if backend == "vllm":
         return _run_inference_vllm(
             model_id=model_id, hint_types=hint_types,
@@ -176,6 +190,102 @@ def run_inference(
     elapsed = _fmt_duration(time.time() - t_start)
     print(f"\nInference done: {n_ok} ok, {n_skipped_no_think} no-think, "
           f"{n_errors} errors, {n_skipped_existing} already done | {elapsed}")
+
+
+def _run_inference_api(
+    model_id: str,
+    hint_types: list[str] | None = None,
+    dataset_path: str = "data/dataset.jsonl",
+    generations_out: str = "data/generations.jsonl",
+    max_new_tokens: int = 8192,
+    limit: int | None = None,
+    api_base: str | None = None,
+    concurrency: int = 32,
+) -> None:
+    from openai import OpenAI
+
+    if hint_types is None:
+        hint_types = list(ALL_HINT_TYPES)
+
+    api_base = api_base or os.environ.get(
+        "API_BASE", "https://api.together.xyz/v1",
+    )
+    api_key = os.environ.get("API_KEY") or os.environ.get("TOGETHER_API_KEY")
+    if not api_key:
+        raise RuntimeError("Set API_KEY or TOGETHER_API_KEY environment variable")
+
+    client = OpenAI(base_url=api_base, api_key=api_key)
+
+    with open(dataset_path) as f:
+        dataset = [json.loads(l) for l in f if l.strip()]
+    out_path = Path(generations_out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    existing = load_existing_run_ids(out_path)
+
+    pending = []
+    for record in dataset:
+        for hint_type in hint_types:
+            run_id = f"{record['question_id']}__{hint_type}"
+            if run_id not in existing:
+                pending.append((record, hint_type, run_id))
+                if limit is not None and len(pending) >= limit:
+                    break
+        else:
+            continue
+        break
+
+    if not pending:
+        print("No pending generations.")
+        return
+
+    print(f"Generating {len(pending)} responses via {api_base} "
+          f"(model={model_id}, concurrency={concurrency})...")
+
+    lock = __import__("threading").Lock()
+
+    def _call(item):
+        record, hint_type, run_id = item
+        user_msg = build_user_message(record, hint_type)
+        resp = client.chat.completions.create(
+            model=model_id,
+            messages=[{"role": "user", "content": user_msg}],
+            max_tokens=max_new_tokens,
+            temperature=0.6,
+            top_p=0.95,
+        )
+        return {
+            "run_id": run_id,
+            "question_id": record["question_id"],
+            "hint_type": hint_type,
+            "generated_text": resp.choices[0].message.content,
+            "model_id": model_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+    t_start = time.time()
+    n_ok = 0
+    n_err = 0
+
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        futures = {pool.submit(_call, item): item[2] for item in pending}
+        for future in as_completed(futures):
+            run_id = futures[future]
+            try:
+                result = future.result()
+                with lock:
+                    with open(out_path, "a") as f:
+                        f.write(json.dumps(result) + "\n")
+                n_ok += 1
+                if n_ok % 50 == 0 or n_ok == len(pending):
+                    elapsed = time.time() - t_start
+                    print(f"  {n_ok}/{len(pending)} done ({elapsed:.0f}s)",
+                          flush=True)
+            except Exception as e:
+                n_err += 1
+                print(f"  ERROR {run_id}: {type(e).__name__}: {e}")
+
+    elapsed = time.time() - t_start
+    print(f"Done: {n_ok} ok, {n_err} errors in {elapsed:.0f}s")
 
 
 def _run_inference_vllm(
@@ -319,7 +429,10 @@ def main():
                     help="Stop after this many fresh runs (skipped runs don't count).")
     ap.add_argument("--run-timeout", type=int, default=600,
                     help="Skip any single run that takes longer than this (seconds).")
-    ap.add_argument("--backend", choices=["hf", "vllm"], default="hf")
+    ap.add_argument("--backend", choices=["hf", "vllm", "api"], default="hf")
+    ap.add_argument("--generations-out", default="data/generations.jsonl")
+    ap.add_argument("--api-base", default=None)
+    ap.add_argument("--concurrency", type=int, default=32)
     args = ap.parse_args()
 
     run_inference(
@@ -333,6 +446,9 @@ def main():
         limit=args.limit,
         run_timeout=args.run_timeout,
         backend=args.backend,
+        generations_out=args.generations_out,
+        api_base=args.api_base,
+        concurrency=args.concurrency,
     )
 
 

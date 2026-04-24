@@ -4,5 +4,6 @@ accelerate
 gradio
 datasets
 anthropic
+openai
 python-dotenv
 scikit-learn

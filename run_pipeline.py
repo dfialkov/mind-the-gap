@@ -2,6 +2,7 @@
 import argparse
 
 from build_dataset import build_dataset_file
+from extract_activations import extract_activations
 from run_inference import run_inference
 from run_judges import run_judges
 from train_probes import train_probes
@@ -49,6 +50,16 @@ def run_pipeline(
         run_timeout=run_timeout,
         backend=backend,
     ))
+
+    if backend == "api":
+        print("\n=== Stage 2b/4: extract activations ===")
+        extract_activations(**_kw(
+            model_id=model_id,
+            dataset_path=dataset_path,
+            runs_out=runs_out,
+            activations_dir=activations_dir,
+            device=device,
+        ))
 
     print("\n=== Stage 3/4: run judges ===")
     run_judges(**_kw(
