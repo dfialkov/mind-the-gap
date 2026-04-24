@@ -105,6 +105,7 @@ def run_single(
     gen_config.do_sample = True
     gen_config.temperature = temperature
     gen_config.top_p = top_p
+    gen_config.top_k = 20
     gen_config.max_new_tokens = max_new_tokens
     gen_config.pad_token_id = tokenizer.eos_token_id
 
