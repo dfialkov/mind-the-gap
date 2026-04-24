@@ -87,7 +87,8 @@ def run_inference(
     preflight_config.do_sample = True
     preflight_config.temperature = 0.6
     preflight_config.top_p = 0.95
-    preflight_config.max_new_tokens = 256
+    preflight_config.max_new_tokens = 1024
+    preflight_config.top_k = 20
     preflight_config.pad_token_id = tokenizer.eos_token_id
     with torch.no_grad():
         preflight_gen = model.generate(
