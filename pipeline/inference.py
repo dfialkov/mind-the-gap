@@ -101,14 +101,17 @@ def run_single(
     prompt_len = input_ids.shape[1]
 
     stopping = StoppingCriteriaList([_TimeLimitCriteria(run_timeout)])
+    gen_config = model.generation_config
+    gen_config.do_sample = True
+    gen_config.temperature = temperature
+    gen_config.top_p = top_p
+    gen_config.max_new_tokens = max_new_tokens
+    gen_config.pad_token_id = tokenizer.eos_token_id
+
     with torch.no_grad():
         gen = model.generate(
             input_ids,
-            max_new_tokens=max_new_tokens,
-            do_sample=True,
-            temperature=temperature,
-            top_p=top_p,
-            pad_token_id=tokenizer.eos_token_id,
+            generation_config=gen_config,
             stopping_criteria=stopping,
         )
 
