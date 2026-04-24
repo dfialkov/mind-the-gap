@@ -220,7 +220,7 @@ def _run_inference_vllm(
     # --- Phase 1: batch generate with vLLM ---
     print(f"Phase 1/2: Generating {len(pending)} responses with vLLM...")
     print(f"Loading {model_id}...")
-    llm = LLM(model=model_id, dtype="bfloat16")
+    llm = LLM(model=model_id, dtype="bfloat16", max_model_len=16384)
     tokenizer = AutoTokenizer.from_pretrained(model_id)
 
     sampling_params = SamplingParams(
