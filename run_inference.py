@@ -83,10 +83,15 @@ def run_inference(
             f"Template tail: ...{preflight_prompt[-80:]!r}"
         )
     preflight_ids = tokenizer(preflight_prompt, return_tensors="pt").input_ids.to(device)
+    preflight_config = model.generation_config
+    preflight_config.do_sample = True
+    preflight_config.temperature = 0.6
+    preflight_config.top_p = 0.95
+    preflight_config.max_new_tokens = 256
+    preflight_config.pad_token_id = tokenizer.eos_token_id
     with torch.no_grad():
         preflight_gen = model.generate(
-            preflight_ids, max_new_tokens=256,
-            do_sample=False, pad_token_id=tokenizer.eos_token_id,
+            preflight_ids, generation_config=preflight_config,
         )
     preflight_new = preflight_gen[0, preflight_ids.shape[1]:]
     preflight_text = tokenizer.decode(preflight_new, skip_special_tokens=False)
