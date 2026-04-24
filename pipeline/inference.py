@@ -162,3 +162,65 @@ def run_single(
         "model_id": model_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def capture_activations_from_ids(
+    *,
+    model,
+    tokenizer,
+    record: dict,
+    hint_type: str,
+    prompt_token_ids: list[int],
+    generated_token_ids: list[int],
+    end_think_id: int,
+    activations_dir: Path,
+    model_id: str,
+) -> dict | None:
+    """Given pre-generated token IDs, find probe positions and capture activations."""
+    device = next(model.parameters()).device
+    prompt_len = len(prompt_token_ids)
+    new_ids = torch.tensor(generated_token_ids)
+
+    end_pos_rel, answer_pos_rel = _find_probe_position(new_ids, tokenizer, end_think_id)
+    if end_pos_rel is None or answer_pos_rel is None or end_pos_rel < 1:
+        return None
+
+    think_first_rel = 0
+    think_last_rel = end_pos_rel - 1
+    think_mid_rel = (think_first_rel + think_last_rel) // 2
+
+    target_indices = {
+        "think_first": prompt_len + think_first_rel,
+        "think_mid": prompt_len + think_mid_rel,
+        "think_last": prompt_len + think_last_rel,
+        "answer_first": prompt_len + answer_pos_rel,
+    }
+
+    full_ids = torch.tensor(
+        prompt_token_ids + generated_token_ids, dtype=torch.long,
+    ).unsqueeze(0).to(device)
+
+    activations = _capture_activations(model, full_ids, target_indices)
+
+    stem = f"{record['question_id']}-{hint_type}"
+    activation_paths = {}
+    for loc, act in activations.items():
+        act_path = activations_dir / f"{loc}-{stem}.pt"
+        _save_tensor_atomic(act, act_path)
+        activation_paths[loc] = str(act_path)
+
+    generated_text = tokenizer.decode(new_ids, skip_special_tokens=False)
+    thinking, _, response = generated_text.partition("</think>")
+
+    return {
+        "run_id": f"{record['question_id']}__{hint_type}",
+        "question_id": record["question_id"],
+        "hint_type": hint_type,
+        "thinking": thinking,
+        "response": response,
+        "n_tokens": len(generated_token_ids),
+        "probe_positions": dict(target_indices),
+        "activation_paths": activation_paths,
+        "model_id": model_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }

@@ -29,6 +29,7 @@ def run_pipeline(
     run_timeout: int | None = None,
     results_out: str | None = None,
     probe_C: float | None = None,
+    backend: str | None = None,
 ) -> None:
     print("=== Stage 1/4: build dataset ===")
     build_dataset_file(**_kw(
@@ -46,6 +47,7 @@ def run_pipeline(
         device=device,
         limit=inference_limit,
         run_timeout=run_timeout,
+        backend=backend,
     ))
 
     print("\n=== Stage 3/4: run judges ===")
@@ -88,6 +90,7 @@ def main():
                     help="Skip any single inference run taking longer than this (seconds).")
     ap.add_argument("--results-out", default=None)
     ap.add_argument("--probe-C", type=float, default=None)
+    ap.add_argument("--backend", choices=["hf", "vllm"], default=None)
     args = ap.parse_args()
 
     run_pipeline(
@@ -107,6 +110,7 @@ def main():
         run_timeout=args.run_timeout,
         results_out=args.results_out,
         probe_C=args.probe_C,
+        backend=args.backend,
     )
 
 

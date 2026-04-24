@@ -8,8 +8,8 @@ from pathlib import Path
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from pipeline.hints import ALL_HINT_TYPES
-from pipeline.inference import run_single, PROBE_LOCATIONS
+from pipeline.hints import ALL_HINT_TYPES, build_user_message
+from pipeline.inference import run_single, capture_activations_from_ids, PROBE_LOCATIONS
 
 
 def _fmt_duration(seconds: float) -> str:
@@ -48,7 +48,15 @@ def run_inference(
     device: str = "mps",
     limit: int | None = None,
     run_timeout: int = 600,
+    backend: str = "hf",
 ) -> None:
+    if backend == "vllm":
+        return _run_inference_vllm(
+            model_id=model_id, hint_types=hint_types,
+            dataset_path=dataset_path, runs_out=runs_out,
+            activations_dir=activations_dir,
+            max_new_tokens=max_new_tokens, limit=limit,
+        )
     if hint_types is None:
         hint_types = list(ALL_HINT_TYPES)
 
@@ -63,8 +71,7 @@ def run_inference(
     print(f"Loading {model_id} on {device}...")
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     model = AutoModelForCausalLM.from_pretrained(
-        model_id, torch_dtype=torch.bfloat16,
-        attn_implementation="flash_attention_2",
+        model_id, torch_dtype=torch.bfloat16
     ).to(device)
     model.eval()
 
@@ -171,6 +178,134 @@ def run_inference(
           f"{n_errors} errors, {n_skipped_existing} already done | {elapsed}")
 
 
+def _run_inference_vllm(
+    model_id: str,
+    hint_types: list[str] | None = None,
+    dataset_path: str = "data/dataset.jsonl",
+    runs_out: str = "data/runs.jsonl",
+    activations_dir: str = "data/activations",
+    max_new_tokens: int = 8192,
+    limit: int | None = None,
+) -> None:
+    import gc
+    from vllm import LLM, SamplingParams
+
+    if hint_types is None:
+        hint_types = list(ALL_HINT_TYPES)
+
+    with open(dataset_path) as f:
+        dataset = [json.loads(l) for l in f if l.strip()]
+    runs_path = Path(runs_out)
+    runs_path.parent.mkdir(parents=True, exist_ok=True)
+    act_dir = Path(activations_dir)
+    act_dir.mkdir(parents=True, exist_ok=True)
+    existing = load_existing_run_ids(runs_path)
+
+    pending = []
+    for record in dataset:
+        for hint_type in hint_types:
+            run_id = f"{record['question_id']}__{hint_type}"
+            if run_id not in existing:
+                pending.append((record, hint_type, run_id))
+                if limit is not None and len(pending) >= limit:
+                    break
+        else:
+            continue
+        break
+
+    if not pending:
+        print("No pending runs.")
+        return
+
+    # --- Phase 1: batch generate with vLLM ---
+    print(f"Phase 1/2: Generating {len(pending)} responses with vLLM...")
+    print(f"Loading {model_id}...")
+    llm = LLM(model=model_id, dtype="bfloat16")
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+
+    sampling_params = SamplingParams(
+        temperature=0.6, top_p=0.95, top_k=20,
+        max_tokens=max_new_tokens,
+    )
+
+    prompts = []
+    for record, hint_type, run_id in pending:
+        user_msg = build_user_message(record, hint_type)
+        messages = [{"role": "user", "content": user_msg}]
+        prompt = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True,
+        )
+        prompts.append(prompt)
+
+    t0 = time.time()
+    outputs = llm.generate(prompts, sampling_params)
+    t_gen = time.time() - t0
+    total_tokens = sum(len(o.outputs[0].token_ids) for o in outputs)
+    print(f"Generated {total_tokens} tokens in {_fmt_duration(t_gen)} "
+          f"({total_tokens / t_gen:.0f} tok/s)")
+
+    intermediates = []
+    for i, (record, hint_type, run_id) in enumerate(pending):
+        gen_out = outputs[i].outputs[0]
+        intermediates.append({
+            "record": record,
+            "hint_type": hint_type,
+            "run_id": run_id,
+            "prompt_token_ids": list(outputs[i].prompt_token_ids),
+            "generated_token_ids": list(gen_out.token_ids),
+        })
+
+    del llm, outputs
+    gc.collect()
+    torch.cuda.empty_cache()
+    print("vLLM unloaded.")
+
+    # --- Phase 2: activation capture with HuggingFace ---
+    print(f"Phase 2/2: Capturing activations for {len(intermediates)} runs...")
+    print(f"Loading {model_id} with HuggingFace...")
+    hf_model = AutoModelForCausalLM.from_pretrained(
+        model_id, torch_dtype=torch.bfloat16,
+    ).to("cuda")
+    hf_model.eval()
+
+    end_think_id = tokenizer.convert_tokens_to_ids("</think>")
+    n_ok = 0
+    n_skip = 0
+    t_start = time.time()
+
+    for i, item in enumerate(intermediates):
+        t0 = time.time()
+        result = capture_activations_from_ids(
+            model=hf_model,
+            tokenizer=tokenizer,
+            record=item["record"],
+            hint_type=item["hint_type"],
+            prompt_token_ids=item["prompt_token_ids"],
+            generated_token_ids=item["generated_token_ids"],
+            end_think_id=end_think_id,
+            activations_dir=act_dir,
+            model_id=model_id,
+        )
+        dt = time.time() - t0
+
+        if result is None:
+            n_skip += 1
+            print(f"[{i+1}/{len(intermediates)}] skip {item['run_id']} "
+                  f"(no </think>)")
+            continue
+
+        with open(runs_path, "a") as f:
+            f.write(json.dumps(result) + "\n")
+        n_ok += 1
+        elapsed = _fmt_duration(time.time() - t_start)
+        print(f"[{i+1}/{len(intermediates)}] {item['run_id']} "
+              f"({dt:.1f}s, {result['n_tokens']} tok) | elapsed={elapsed}",
+              flush=True)
+
+    elapsed = _fmt_duration(time.time() - t_start)
+    print(f"\nDone: {n_ok} ok, {n_skip} no-think | {elapsed}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
@@ -184,6 +319,7 @@ def main():
                     help="Stop after this many fresh runs (skipped runs don't count).")
     ap.add_argument("--run-timeout", type=int, default=600,
                     help="Skip any single run that takes longer than this (seconds).")
+    ap.add_argument("--backend", choices=["hf", "vllm"], default="hf")
     args = ap.parse_args()
 
     run_inference(
@@ -196,6 +332,7 @@ def main():
         device=args.device,
         limit=args.limit,
         run_timeout=args.run_timeout,
+        backend=args.backend,
     )
 
 
