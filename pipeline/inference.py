@@ -1,32 +1,31 @@
-"""One-run inference: generate, locate probe position, capture activations."""
+"""Activation capture for externally generated responses."""
 import os
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 import torch
-from transformers import StoppingCriteria, StoppingCriteriaList
 
 from pipeline.hints import build_user_message
 
 PROBE_LOCATIONS = ("think_first", "think_mid", "think_last", "answer_first")
 
 
-class _TimeLimitCriteria(StoppingCriteria):
-    def __init__(self, max_seconds: int):
-        self.max_seconds = max_seconds
-        self.start = time.monotonic()
+def _find_subsequence(ids: torch.Tensor, needle: list[int]) -> int | None:
+    if not needle or len(ids) < len(needle):
+        return None
+    needle_tensor = torch.tensor(needle, dtype=ids.dtype, device=ids.device)
+    for start in range(len(ids) - len(needle) + 1):
+        if torch.equal(ids[start:start + len(needle)], needle_tensor):
+            return start
+    return None
 
-    def __call__(self, input_ids, scores, **kwargs):
-        return (time.monotonic() - self.start) > self.max_seconds
 
-
-def _find_probe_position(new_ids: torch.Tensor, tokenizer, end_think_id: int):
+def _find_probe_position(new_ids: torch.Tensor, tokenizer, boundary_ids: list[int]):
     """Return (end_think_pos, probe_target_pos). Either may be None if not found."""
-    matches = (new_ids == end_think_id).nonzero(as_tuple=True)[0]
-    if len(matches) == 0:
+    boundary_start = _find_subsequence(new_ids, boundary_ids)
+    if boundary_start is None:
         return None, None
-    end_pos = matches[0].item()
+    end_pos = boundary_start + len(boundary_ids) - 1
     for i in range(end_pos + 1, len(new_ids)):
         if tokenizer.decode([new_ids[i].item()]).strip():
             return end_pos, i - 1
@@ -76,94 +75,6 @@ def _save_tensor_atomic(tensor: torch.Tensor, path: Path) -> None:
     os.replace(tmp, path)
 
 
-def run_single(
-    *,
-    model,
-    tokenizer,
-    record: dict,
-    hint_type: str,
-    end_think_id: int,
-    activations_dir: Path,
-    model_id: str,
-    max_new_tokens: int = 8192,
-    temperature: float = 0.6,
-    top_p: float = 0.95,
-    run_timeout: int = 600,
-) -> dict | None:
-    """One (question, hint) inference. Returns run dict, or None if </think> missing."""
-    device = next(model.parameters()).device
-    user_msg = build_user_message(record, hint_type)
-    messages = [{"role": "user", "content": user_msg}]
-    prompt_text = tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
-    )
-    input_ids = tokenizer(prompt_text, return_tensors="pt").input_ids.to(device)
-    prompt_len = input_ids.shape[1]
-
-    stopping = StoppingCriteriaList([_TimeLimitCriteria(run_timeout)])
-    gen_config = model.generation_config
-    gen_config.do_sample = True
-    gen_config.temperature = temperature
-    gen_config.top_p = top_p
-    gen_config.top_k = 20
-    gen_config.max_new_tokens = max_new_tokens
-    gen_config.pad_token_id = tokenizer.eos_token_id
-
-    t0 = time.monotonic()
-    with torch.no_grad():
-        gen = model.generate(
-            input_ids,
-            generation_config=gen_config,
-            stopping_criteria=stopping,
-        )
-    t_gen = time.monotonic() - t0
-
-    new_ids = gen[0, prompt_len:]
-    end_pos_rel, answer_pos_rel = _find_probe_position(new_ids, tokenizer, end_think_id)
-    if end_pos_rel is None or answer_pos_rel is None or end_pos_rel < 1:
-        return None
-
-    think_first_rel = 0
-    think_last_rel = end_pos_rel - 1
-    think_mid_rel = (think_first_rel + think_last_rel) // 2
-
-    target_indices = {
-        "think_first": prompt_len + think_first_rel,
-        "think_mid": prompt_len + think_mid_rel,
-        "think_last": prompt_len + think_last_rel,
-        "answer_first": prompt_len + answer_pos_rel,
-    }
-
-    t1 = time.monotonic()
-    activations = _capture_activations(model, gen, target_indices)
-    t_act = time.monotonic() - t1
-    print(f"  timing: generate={t_gen:.1f}s, activations={t_act:.1f}s, "
-          f"seq_len={gen.shape[1]}, new_tokens={len(new_ids)}")
-
-    stem = f"{record['question_id']}-{hint_type}"
-    activation_paths = {}
-    for loc, act in activations.items():
-        act_path = activations_dir / f"{loc}-{stem}.pt"
-        _save_tensor_atomic(act, act_path)
-        activation_paths[loc] = str(act_path)
-
-    generated_text = tokenizer.decode(new_ids, skip_special_tokens=False)
-    thinking, _, response = generated_text.partition("</think>")
-
-    return {
-        "run_id": f"{record['question_id']}__{hint_type}",
-        "question_id": record["question_id"],
-        "hint_type": hint_type,
-        "thinking": thinking,
-        "response": response,
-        "n_tokens": len(new_ids),
-        "probe_positions": {k: v for k, v in target_indices.items()},
-        "activation_paths": activation_paths,
-        "model_id": model_id,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-
-
 def capture_activations_from_ids(
     *,
     model,
@@ -172,7 +83,8 @@ def capture_activations_from_ids(
     hint_type: str,
     prompt_token_ids: list[int],
     generated_token_ids: list[int],
-    end_think_id: int,
+    boundary_ids: list[int],
+    boundary: str,
     activations_dir: Path,
     model_id: str,
 ) -> dict | None:
@@ -181,7 +93,9 @@ def capture_activations_from_ids(
     prompt_len = len(prompt_token_ids)
     new_ids = torch.tensor(generated_token_ids)
 
-    end_pos_rel, answer_pos_rel = _find_probe_position(new_ids, tokenizer, end_think_id)
+    end_pos_rel, answer_pos_rel = _find_probe_position(
+        new_ids, tokenizer, boundary_ids
+    )
     if end_pos_rel is None or answer_pos_rel is None or end_pos_rel < 1:
         return None
 
@@ -210,7 +124,7 @@ def capture_activations_from_ids(
         activation_paths[loc] = str(act_path)
 
     generated_text = tokenizer.decode(new_ids, skip_special_tokens=False)
-    thinking, _, response = generated_text.partition("</think>")
+    thinking, _, response = generated_text.partition(boundary)
 
     return {
         "run_id": f"{record['question_id']}__{hint_type}",
@@ -224,3 +138,42 @@ def capture_activations_from_ids(
         "model_id": model_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def capture_activations_from_text(
+    *,
+    model,
+    tokenizer,
+    record: dict,
+    hint_type: str,
+    generated_text: str,
+    boundary_ids: list[int],
+    boundary: str,
+    activations_dir: Path,
+    model_id: str,
+) -> dict | None:
+    """Tokenize an externally generated response and capture activations."""
+    user_msg = build_user_message(record, hint_type)
+    messages = [{"role": "user", "content": user_msg}]
+    prompt_text = tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
+    prompt_token_ids = tokenizer(
+        prompt_text, add_special_tokens=False
+    ).input_ids
+    generated_token_ids = tokenizer(
+        generated_text, add_special_tokens=False
+    ).input_ids
+
+    return capture_activations_from_ids(
+        model=model,
+        tokenizer=tokenizer,
+        record=record,
+        hint_type=hint_type,
+        prompt_token_ids=prompt_token_ids,
+        generated_token_ids=generated_token_ids,
+        boundary_ids=boundary_ids,
+        boundary=boundary,
+        activations_dir=activations_dir,
+        model_id=model_id,
+    )

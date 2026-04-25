@@ -4,6 +4,6 @@ accelerate
 gradio
 datasets
 anthropic
-openai
+huggingface_hub
 python-dotenv
 scikit-learn

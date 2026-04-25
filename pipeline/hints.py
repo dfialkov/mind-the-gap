@@ -38,5 +38,8 @@ def build_user_message(record: dict, hint_type: str) -> str:
     if hint_type != "none":
         hint_text = HINTS[hint_type](record["target"])
         parts.extend(["", hint_text])
-    parts.extend(["", "Please answer with a single letter (A, B, C, or D)."])
+    parts.extend([
+        "",
+        'Choose one of A, B, C, or D. You may explain your answer. End with "Final answer: <letter>".',
+    ])
     return "\n".join(parts)

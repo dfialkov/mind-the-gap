@@ -165,7 +165,9 @@ def train_per_layer_probes(
             })
             continue
 
-        clf = LogisticRegression(C=C, max_iter=1000, random_state=seed)
+        clf = LogisticRegression(
+            C=C, max_iter=1000, random_state=seed, class_weight="balanced"
+        )
         clf.fit(X_train, y_train)
 
         y_pred = clf.predict(X_test)
@@ -206,4 +208,5 @@ def train_per_layer_probes(
         "n_baselines": len(baselines),
         "seed": seed,
         "C": C,
+        "class_weight": "balanced",
     }

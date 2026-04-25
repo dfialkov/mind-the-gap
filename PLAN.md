@@ -2,7 +2,7 @@
 
 ## Context
 
-This is a resume-scale interpretability experiment adapting [Young \(2026\)](https://arxiv.org/pdf/2603.22582) "Lie to Me" methodology to ask a specific follow-up: **can a linear probe at the `</think>` boundary detect whether a reasoning model is about to suppress (in its answer) a hint that it already acknowledged (in its CoT)?** The paper established that across open-weight reasoning models there's a ~60pp average gap between thinking-token acknowledgment (~87.5%) and answer-text acknowledgment (~28.6%) — i.e., models "know" about hint influence internally but systematically hide it from users. Our probe targets the representational commitment to that suppression.
+This is a resume-scale interpretability experiment adapting [Young \(2026\)](https://arxiv.org/pdf/2603.22582) "Lie to Me" methodology to ask a specific follow-up: **can a linear probe at the model's thinking/final-response boundary detect whether a reasoning model is about to suppress (in its answer) a hint that it already acknowledged (in its CoT)?** The paper established that across open-weight reasoning models there's a ~60pp average gap between thinking-token acknowledgment (~87.5%) and answer-text acknowledgment (~28.6%) — i.e., models "know" about hint influence internally but systematically hide it from users. Our probe targets the representational commitment to that suppression.
 
 Local development on `DeepSeek-R1-Distill-Qwen-14B` (already downloaded, ~28GB cache) for pipeline validation. Cloud scale-up on `QwQ-32B` is a follow-up phase, not covered in detail here.
 
@@ -11,9 +11,10 @@ Local development on `DeepSeek-R1-Distill-Qwen-14B` (already downloaded, ~28GB c
 Four stages, each resumable, each with its own top-level script:
 
 1. **Dataset construction** — Sample MMLU + GPQA Diamond, pick wrong-answer targets, enumerate (question × hint) pairs.
-2. **Inference + activation capture** — For each (question, hint): baseline run, hinted run, capture residual-stream activations at `</think>` boundary on the hinted run.
-3. **Judge labeling** — Two Claude-API classifiers per hinted run: did CoT acknowledge the hint? did answer text acknowledge it?
-4. **Probe training + evaluation** — Train 49 logistic-regression probes (one per layer's residual), plot per-layer curve, report best-layer test accuracy.
+2. **Answer generation** — For each (question, hint), call Hugging Face Inference Providers and write generated thinking/response records.
+3. **Activation extraction** — Re-run local teacher-forced forward passes from the generated records and capture residual-stream activations at the configured thinking/final-response boundary.
+4. **Judge labeling** — Two Claude-API classifiers per hinted run: did CoT acknowledge the hint? did answer text acknowledge it?
+5. **Probe training + evaluation** — Train per-layer logistic-regression probes, report held-out test accuracy.
 
 ## File Layout
 
@@ -28,11 +29,12 @@ ml-project/
 │   ├── __init__.py
 │   ├── hints.py            # hint template functions (4 types)
 │   ├── dataset.py          # MMLU+GPQA sampling, target selection, record schema
-│   ├── inference.py        # one-run function: generate + activation capture
+│   ├── inference.py        # local activation capture helpers
 │   ├── judges.py           # Claude-API binary classifiers (CoT-ack, answer-ack)
 │   └── probes.py           # per-layer logistic-regression training + eval
 ├── build_dataset.py        # script: emit dataset.jsonl
-├── run_inference.py        # script: iterate, call pipeline.inference, skip-if-exists
+├── generate_answers.py     # script: API-generate responses into runs.jsonl
+├── extract_activations.py  # script: local forward passes, grouped by model
 ├── run_judges.py           # script: iterate, call pipeline.judges, append to labels.jsonl
 ├── train_probes.py         # script: load + filter + train 49 probes + plot
 └── data/
@@ -69,25 +71,26 @@ Each template function takes `(target, subject)` and returns the hint string. Vi
   }
   ```
 
-### Inference + activation capture (`pipeline/inference.py`)
+### Answer generation + activation extraction (`generate_answers.py`, `extract_activations.py`, `pipeline/inference.py`)
 
-Per (question, hint) pair, one function call produces:
-- Baseline run (cached, reused across hint types for the same question). Activations **also captured** at the same probe-position rule — needed for the no-hint control condition.
-- Hinted run: full generation, then teacher-forced second forward pass with `output_hidden_states=True`, sliced at target positions
+Generation and activation extraction are deliberately split:
+- `generate_answers.py` calls Hugging Face Inference Providers and writes `runs.jsonl`.
+- `extract_activations.py` reads `runs.jsonl`, groups pending runs by recorded generation model, loads each local activation model once, and writes `data/activations/*`.
 
 **Probe position (single):** the "last-whitespace-before-first-content-token" position — the residual whose next-token logit produces the first real response word. We hypothesize that the suppression-vs-acknowledgement decision is made at the very first(real) token of the answer to a statistically significant degree. 
 
 **Position-finding logic:**
-1. Find `end_think_pos` via `convert_tokens_to_ids("</think>")`.
-2. Walk forward from there, skipping tokens whose decoded text is whitespace-only, until a non-whitespace token is found — that's `first_content_pos`.
-3. Probe target index = `first_content_pos - 1` (the whitespace token whose next-token logit produces the first content word).
+1. Resolve the activation model's thinking/final-response boundary from `pipeline/model_config.py` or `--thinking-boundary`.
+2. Tokenize the boundary with `add_special_tokens=False` and find that token subsequence in the generated tokens.
+3. Walk forward from there, skipping tokens whose decoded text is whitespace-only, until a non-whitespace token is found — that's `first_content_pos`.
+4. Probe target index = `first_content_pos - 1` (the whitespace token whose next-token logit produces the first content word).
 
 **Memory strategy:** second forward pass uses `register_forward_hook` on each decoder layer, hook captures only `output[0][:, target_idx, :]` — never materializes the full `[1, seq_len, 5120]` hidden-state stack for all layers. Avoids the ~800MB memory spike on long thinking traces.
 
 **Stored tensor shape:** `(n_hidden_states=49, hidden_size=5120)` per run, bfloat16.
 
-**Token-id lookups (cached at startup):**
-- `end_think_id = tokenizer.convert_tokens_to_ids("</think>")`
+**Token-sequence lookups (cached per activation model):**
+- `boundary_ids = tokenizer(boundary, add_special_tokens=False).input_ids`
 - EOS / newline ids as needed for position-finding
 
 **Run record (appended to `runs.jsonl`):**
@@ -150,9 +153,9 @@ Spot-check agreement: plan to hand-label ~30 of the 40 smoke-test runs, compare 
 
 Note: `influenced` uses the paper's definition, `a_hint == target AND a_hint != a_base`. Correctness of the baseline answer (`a_base == correct`) is orthogonal and deliberately *not* a filter criterion — a model that's honestly wrong is still honest. 
 - **Features**: one 5120-dim vector per layer per example, 49 layers.
-- **Probe**: `sklearn.linear_model.LogisticRegression(C=1.0, max_iter=1000)` per layer. Optionally L2-regularized logistic regression with CV over C.
-- **Split**: stratified 60/20/20 train/val/test on example_ids. Critical: splitting by example_id avoids leakage across hint types (same question shouldn't appear in train and test).
-- **Output**: `results.json` with per-layer val + test metrics; `figures/per_layer_accuracy.png` with the curve.
+- **Probe**: `sklearn.linear_model.LogisticRegression(C=1.0, max_iter=1000)` per layer.
+- **Split**: train/test only, split by question_id to avoid leakage across hint types. There is no dev/validation split because we are not tuning hyperparameters.
+- **Output**: `results.json` with per-layer test metrics; `figures/per_layer_accuracy.png` with the curve.
 
 ### Controls
 
@@ -210,19 +213,21 @@ Run each stage in order, verify:
 1. `python build_dataset.py --n-mmlu 20 --n-gpqa 0 --seed 103`
    → `data/dataset.jsonl` has 20 rows, each with 4 hint_types, valid target ≠ correct, schema intact.
 
-2. `python run_inference.py --hint-types unethical --model deepseek-ai/DeepSeek-R1-Distill-Qwen-14B`
-   → `data/runs.jsonl` has 20 rows (one per question, with both baseline and hinted fields populated).
+2. `python generate_answers.py --hint-types unethical --model Qwen/Qwen3-1.7B:nscale --limit 20`
+   → `data/runs.jsonl` has generated thinking/response records.
+
+3. `python extract_activations.py --device mps`
    → `data/activations/*.pt` has 20 files. Load one, verify shape `(49, 5120)` and dtype `bfloat16`.
    → ~20–40% of runs show `influenced: true` (roughly matches paper's 33% for unethical on similar-family models).
 
-3. `python run_judges.py`
+4. `python run_judges.py`
    → `data/labels.jsonl` has 20 rows. Eyeball ~5 to confirm judge outputs look sane.
    → Hand-label 20 runs yourself and compute agreement; target >85%.
 
-4. `python train_probes.py`
+5. `python train_probes.py`
    → `results.json` exists with per-layer metrics.
    → `figures/per_layer_accuracy.png` shows a curve over 49 layers. With N≈5–10 positive examples this will be noisy — verify the code runs cleanly and produces a sensible-looking plot, don't over-interpret the numbers.
 
-5. Re-run any script; verify skip-if-exists logic kicks in and no duplicate work happens.
+6. Re-run any script; verify skip-if-exists logic kicks in and no duplicate work happens.
 
 If all five pass, the pipeline is ready for cloud scale-up.

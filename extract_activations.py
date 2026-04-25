@@ -1,196 +1,213 @@
-"""Extract activations from pre-generated model responses (phase 2 of API-based inference)."""
+"""Extract local forward-pass activations for generated runs."""
 import argparse
 import json
+import os
 import time
+from datetime import timedelta
 from pathlib import Path
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from pipeline.hints import build_user_message
-from pipeline.inference import (
-    _find_probe_position, _capture_activations, _save_tensor_atomic,
-)
+from pipeline.inference import PROBE_LOCATIONS, capture_activations_from_text
+from pipeline.model_config import local_model_id, thinking_boundary_for_model
 
 
 def _fmt_duration(seconds: float) -> str:
-    if seconds < 60:
-        return f"{seconds:.0f}s"
-    if seconds < 3600:
-        return f"{seconds / 60:.0f}m{int(seconds) % 60:02d}s"
-    h, rem = divmod(int(seconds), 3600)
-    m = rem // 60
-    return f"{h}h{m:02d}m"
+    return str(timedelta(seconds=int(seconds)))
 
 
-def _load_existing_run_ids(path: Path) -> set:
+def _load_jsonl(path: Path) -> list[dict]:
     if not path.exists():
-        return set()
-    ids = set()
+        return []
     with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                try:
-                    ids.add(json.loads(line)["run_id"])
-                except (json.JSONDecodeError, KeyError):
-                    pass
-    return ids
+        return [json.loads(line) for line in f if line.strip()]
+
+
+def _write_jsonl_atomic(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+    os.replace(tmp, path)
+
+
+def _generated_text(run: dict, boundary: str) -> str | None:
+    thinking = run.get("thinking")
+    response = run.get("response")
+    if thinking is None or response is None:
+        return None
+    return f"{thinking}{boundary}{response}"
+
+
+def _has_all_activations(run: dict) -> bool:
+    paths = run.get("activation_paths") or {}
+    return all(
+        paths.get(loc) is not None and Path(paths[loc]).exists()
+        for loc in PROBE_LOCATIONS
+    )
 
 
 def extract_activations(
-    model_id: str = "Qwen/QwQ-32B",
-    generations_path: str = "data/generations.jsonl",
+    model_id: str | None = None,
     dataset_path: str = "data/dataset.jsonl",
-    runs_out: str = "data/runs.jsonl",
+    runs_path: str = "data/runs.jsonl",
     activations_dir: str = "data/activations",
-    device: str = "cuda",
+    device: str = "mps",
     limit: int | None = None,
+    thinking_boundary: str | None = None,
 ) -> None:
-    with open(generations_path) as f:
-        generations = [json.loads(l) for l in f if l.strip()]
-
-    with open(dataset_path) as f:
-        dataset = {
-            r["question_id"]: r
-            for r in (json.loads(l) for l in f if l.strip())
-        }
-
-    runs_path = Path(runs_out)
-    runs_path.parent.mkdir(parents=True, exist_ok=True)
-    existing = _load_existing_run_ids(runs_path)
-
-    pending = [g for g in generations if g["run_id"] not in existing]
-    if limit is not None:
-        pending = pending[:limit]
-
-    if not pending:
-        print("No pending activations to extract.")
+    dataset = {
+        row["question_id"]: row
+        for row in _load_jsonl(Path(dataset_path))
+    }
+    runs_file = Path(runs_path)
+    runs = _load_jsonl(runs_file)
+    if not runs:
+        print(
+            f"No generated runs found at {runs_file}. "
+            "Run generate_answers.py first."
+        )
         return
 
-    print(f"Loading {model_id} on {device}...")
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_id, torch_dtype=torch.bfloat16,
-    ).to(device)
-    model.eval()
-
-    end_think_id = tokenizer.convert_tokens_to_ids("</think>")
     act_dir = Path(activations_dir)
     act_dir.mkdir(parents=True, exist_ok=True)
 
-    n_ok = 0
-    n_skip = 0
-    t_start = time.time()
+    pending = [
+        i for i, run in enumerate(runs)
+        if not _has_all_activations(run)
+    ]
+    if limit is not None:
+        pending = pending[:limit]
+    if not pending:
+        print("No pending activation captures.")
+        return
 
-    for i, gen in enumerate(pending):
-        record = dataset[gen["question_id"]]
-        hint_type = gen["hint_type"]
-        run_id = gen["run_id"]
-
-        user_msg = build_user_message(record, hint_type)
-        messages = [{"role": "user", "content": user_msg}]
-        prompt_text = tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True,
-        )
-
-        generated_text = gen["generated_text"]
-        if generated_text.startswith("<think>"):
-            generated_text = generated_text[len("<think>"):]
-            if generated_text.startswith("\n"):
-                generated_text = generated_text[1:]
-
-        prompt_ids = tokenizer(prompt_text, return_tensors="pt").input_ids[0]
-        full_text = prompt_text + generated_text
-        full_ids = tokenizer(full_text, return_tensors="pt").input_ids.to(device)
-        prompt_len = len(prompt_ids)
-        new_ids = full_ids[0, prompt_len:]
-
-        end_pos_rel, answer_pos_rel = _find_probe_position(
-            new_ids, tokenizer, end_think_id,
-        )
-        if end_pos_rel is None or answer_pos_rel is None or end_pos_rel < 1:
-            n_skip += 1
-            print(f"[{i+1}/{len(pending)}] skip {run_id} (no </think>)")
+    groups: dict[str, list[int]] = {}
+    for idx in pending:
+        run = runs[idx]
+        activation_model_id = model_id or local_model_id(run.get("generation_model_id"))
+        if activation_model_id is None:
+            print(
+                f"warning: skipping {run.get('run_id', f'row-{idx}')} "
+                "because it has no generation_model_id and no --model override"
+            )
             continue
+        groups.setdefault(activation_model_id, []).append(idx)
 
-        think_first_rel = 0
-        think_last_rel = end_pos_rel - 1
-        think_mid_rel = (think_first_rel + think_last_rel) // 2
+    if not groups:
+        print("No pending activation captures with a known model.")
+        return
 
-        target_indices = {
-            "think_first": prompt_len + think_first_rel,
-            "think_mid": prompt_len + think_mid_rel,
-            "think_last": prompt_len + think_last_rel,
-            "answer_first": prompt_len + answer_pos_rel,
-        }
+    n_ok = 0
+    n_skipped = 0
+    n_errors = 0
+    t_start = time.time()
+    total = sum(len(group) for group in groups.values())
 
-        t0 = time.time()
-        with torch.no_grad():
-            activations = _capture_activations(model, full_ids, target_indices)
-        dt = time.time() - t0
+    for activation_model_id, group in groups.items():
+        print(
+            f"\nLoading local activation model {activation_model_id} on {device} "
+            f"for {len(group)} runs..."
+        )
+        tokenizer = AutoTokenizer.from_pretrained(activation_model_id)
+        model = AutoModelForCausalLM.from_pretrained(
+            activation_model_id, torch_dtype=torch.bfloat16
+        ).to(device)
+        model.eval()
 
-        stem = f"{gen['question_id']}-{hint_type}"
-        activation_paths = {}
-        for loc, act in activations.items():
-            act_path = act_dir / f"{loc}-{stem}.pt"
-            _save_tensor_atomic(act, act_path)
-            activation_paths[loc] = str(act_path)
+        boundary = thinking_boundary or thinking_boundary_for_model(activation_model_id)
+        if boundary is None:
+            raise RuntimeError(
+                f"No thinking boundary configured for {activation_model_id}. "
+                "Pass --thinking-boundary or add it to pipeline/model_config.py."
+            )
+        boundary_ids = tokenizer(boundary, add_special_tokens=False).input_ids
+        if not boundary_ids:
+            raise RuntimeError(
+                f"Tokenizer for {activation_model_id} cannot tokenize boundary {boundary!r}"
+            )
+        print(f"thinking_boundary = {boundary!r}; boundary_ids = {boundary_ids}")
 
-        raw_text = gen["generated_text"]
-        if "</think>" in raw_text:
-            thinking, _, response = raw_text.partition("</think>")
-            if thinking.startswith("<think>"):
-                thinking = thinking[len("<think>"):]
-            thinking = thinking.strip()
-        else:
-            thinking = raw_text
-            response = ""
+        for idx in group:
+            n = n_ok + n_skipped + n_errors + 1
+            run = runs[idx]
+            run_id = run.get("run_id", f"row-{idx}")
+            record = dataset.get(run.get("question_id"))
+            generated_text = _generated_text(run, boundary)
+            if record is None or generated_text is None:
+                n_errors += 1
+                print(f"[{n}/{total}] ERROR {run_id}: missing dataset row or text")
+                continue
 
-        result = {
-            "run_id": run_id,
-            "question_id": gen["question_id"],
-            "hint_type": hint_type,
-            "thinking": thinking,
-            "response": response,
-            "n_tokens": len(new_ids),
-            "probe_positions": dict(target_indices),
-            "activation_paths": activation_paths,
-            "model_id": gen["model_id"],
-            "timestamp": gen["timestamp"],
-        }
+            t0 = time.time()
+            result = capture_activations_from_text(
+                model=model,
+                tokenizer=tokenizer,
+                record=record,
+                hint_type=run["hint_type"],
+                generated_text=generated_text,
+                boundary_ids=boundary_ids,
+                boundary=boundary,
+                activations_dir=act_dir,
+                model_id=activation_model_id,
+            )
+            dt = time.time() - t0
 
-        with open(runs_path, "a") as f:
-            f.write(json.dumps(result) + "\n")
-        n_ok += 1
+            if result is None:
+                n_skipped += 1
+                print(f"[{n}/{total}] skip {run_id} (boundary not found)")
+                continue
 
-        elapsed = _fmt_duration(time.time() - t_start)
-        print(f"[{i+1}/{len(pending)}] {run_id} ({dt:.1f}s, {len(new_ids)} tok) "
-              f"| elapsed={elapsed}", flush=True)
+            run["n_tokens"] = result["n_tokens"]
+            run["probe_positions"] = result["probe_positions"]
+            run["activation_paths"] = result["activation_paths"]
+            run["activation_model_id"] = activation_model_id
+            run["activation_timestamp"] = result["timestamp"]
+            _write_jsonl_atomic(runs_file, runs)
+
+            n_ok += 1
+            elapsed = _fmt_duration(time.time() - t_start)
+            print(
+                f"[{n}/{total}] {run_id} "
+                f"({dt:.1f}s, {result['n_tokens']} tok) | elapsed={elapsed}",
+                flush=True,
+            )
+
+        del model, tokenizer
+        if device == "cuda":
+            torch.cuda.empty_cache()
 
     elapsed = _fmt_duration(time.time() - t_start)
-    print(f"\nDone: {n_ok} ok, {n_skip} no-think | {elapsed}")
+    print(
+        f"\nActivation capture done: {n_ok} ok, {n_skipped} no-think, "
+        f"{n_errors} errors | {elapsed}"
+    )
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="Qwen/QwQ-32B")
-    ap.add_argument("--generations", default="data/generations.jsonl")
+    ap.add_argument("--model", default=None,
+                    help="Override activation model for all runs.")
     ap.add_argument("--dataset", default="data/dataset.jsonl")
-    ap.add_argument("--runs-out", default="data/runs.jsonl")
+    ap.add_argument("--runs", default="data/runs.jsonl")
     ap.add_argument("--activations-dir", default="data/activations")
-    ap.add_argument("--device", default="cuda")
-    ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--device", default="mps")
+    ap.add_argument("--limit", type=int, default=None,
+                    help="Stop after this many activation captures.")
+    ap.add_argument("--thinking-boundary", default=None,
+                    help="Override the model-family thinking/response boundary.")
     args = ap.parse_args()
 
     extract_activations(
         model_id=args.model,
-        generations_path=args.generations,
         dataset_path=args.dataset,
-        runs_out=args.runs_out,
+        runs_path=args.runs,
         activations_dir=args.activations_dir,
         device=args.device,
         limit=args.limit,
+        thinking_boundary=args.thinking_boundary,
     )
 
 

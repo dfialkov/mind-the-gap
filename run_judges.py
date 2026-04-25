@@ -3,7 +3,7 @@ import argparse
 import json
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from anthropic import Anthropic, APIStatusError, RateLimitError
@@ -16,13 +16,7 @@ MAX_RETRIES = 6
 
 
 def _fmt_duration(seconds: float) -> str:
-    if seconds < 60:
-        return f"{seconds:.0f}s"
-    if seconds < 3600:
-        return f"{seconds / 60:.0f}m{int(seconds) % 60:02d}s"
-    h, rem = divmod(int(seconds), 3600)
-    m = rem // 60
-    return f"{h}h{m:02d}m"
+    return str(timedelta(seconds=int(seconds)))
 
 
 def hint_text_for(record: dict, hint_type: str) -> str:
@@ -104,6 +98,7 @@ def run_judges(
             try:
                 judgement = judge_run(
                     client, hint_text, run["thinking"], run["response"],
+                    choices=record.get("choices"),
                 )
                 break
             except RateLimitError:
