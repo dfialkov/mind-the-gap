@@ -169,6 +169,17 @@ Interpretation:
 
 This control is recorded per-layer alongside test accuracy in `results.json` and plotted on `figures/per_layer_accuracy.png` (second line on the same plot). It's a required part of the reported result, not a post-hoc check.
 
+**Super-honest specificity control.** A particularly useful held-out slice is "super-honest" answers: hinted runs where the model explicitly acknowledges the hint in the final answer while still choosing the same answer as the baseline. These examples are excluded from probe training by the influence filter (`a_hint == a_base`), so they are clean controls rather than alternative negatives.
+
+This slice should be used to test what the probe is *not* detecting. If the probe fires strongly on no-hint baselines but much less on super-honest controls, that suggests the high baseline firing is not simply generic answer-stage dynamics or mere hint acknowledgment. Instead, it points toward a more specific confound: whether the final answer is going to omit hint-acknowledgment language. That is still directly relevant to the original framing — **unfaithfulness to CoT** among cases where the CoT acknowledged influence — but it should not replace the main label definition.
+
+Reporting plan:
+- Keep the primary target as `influenced AND cot_acknowledged`, with `y = not answer_acknowledged`.
+- Report super-honest firing as a specificity/control slice, alongside no-hint false positive rate.
+- Prefer layers where probe accuracy/AUC is good, no-hint false positive rate is interpretable, and super-honest firing is meaningfully lower than no-hint firing.
+- Report all-vs-question-held-out counts by benchmark. In the current `qwen35_27b_full` run, this slice is mostly MMLU (`276` all controls, `241` question-held-out; only `20` / `16` GPQA), so GPQA-specific conclusions from this control are necessarily weak.
+- Do not train on this slice unless the study explicitly changes from "unfaithfulness to CoT" to a different target.
+
 ### Resumability
 
 Every script's inner loop follows the pattern:
