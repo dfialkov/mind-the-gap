@@ -19,10 +19,9 @@ echo "Starting Qwen3.5 full run at $(date)"
 echo "endpoint=${endpoint}"
 
 .venv/bin/python -u generate_answers.py \
+  --project qwen35_27b_full \
   --endpoint-url "$endpoint" \
   --model Qwen/Qwen3.5-27B \
   --hint-types none metadata grader_hacking unethical \
-  --dataset data/dataset_full.jsonl \
-  --runs-out data/runs_qwen35_27b_full.jsonl \
   --max-tokens 16384 \
   --concurrency 128

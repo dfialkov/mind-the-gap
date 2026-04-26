@@ -11,6 +11,9 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from pipeline.inference import PROBE_LOCATIONS, capture_activations_from_text
 from pipeline.model_config import local_model_id, thinking_boundary_for_model
+from pipeline.paths import add_project_arg, project_paths, resolve_project_paths
+
+DEFAULT_PATHS = project_paths()
 
 
 def _fmt_duration(seconds: float) -> str:
@@ -51,9 +54,9 @@ def _has_all_activations(run: dict) -> bool:
 
 def extract_activations(
     model_id: str | None = None,
-    dataset_path: str = "data/dataset.jsonl",
-    runs_path: str = "data/runs.jsonl",
-    activations_dir: str = "data/activations",
+    dataset_path: str = str(DEFAULT_PATHS.dataset),
+    runs_path: str = str(DEFAULT_PATHS.runs),
+    activations_dir: str = str(DEFAULT_PATHS.activations_dir),
     device: str = "mps",
     limit: int | None = None,
     thinking_boundary: str | None = None,
@@ -190,21 +193,31 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=None,
                     help="Override activation model for all runs.")
-    ap.add_argument("--dataset", default="data/dataset.jsonl")
-    ap.add_argument("--runs", default="data/runs.jsonl")
-    ap.add_argument("--activations-dir", default="data/activations")
+    add_project_arg(ap)
+    ap.add_argument("--dataset", default=None)
+    ap.add_argument("--runs", default=None)
+    ap.add_argument("--activations-dir", default=None)
     ap.add_argument("--device", default="mps")
     ap.add_argument("--limit", type=int, default=None,
                     help="Stop after this many activation captures.")
     ap.add_argument("--thinking-boundary", default=None,
                     help="Override the model-family thinking/response boundary.")
     args = ap.parse_args()
+    paths = resolve_project_paths(
+        ap,
+        args,
+        [
+            ("dataset", "--dataset"),
+            ("runs", "--runs"),
+            ("activations_dir", "--activations-dir"),
+        ],
+    )
 
     extract_activations(
         model_id=args.model,
-        dataset_path=args.dataset,
-        runs_path=args.runs,
-        activations_dir=args.activations_dir,
+        dataset_path=args.dataset or str(paths.dataset),
+        runs_path=args.runs or str(paths.runs),
+        activations_dir=args.activations_dir or str(paths.activations_dir),
         device=args.device,
         limit=args.limit,
         thinking_boundary=args.thinking_boundary,

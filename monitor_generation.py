@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from statistics import mean, median
 
+from pipeline.paths import add_project_arg, resolve_project_paths
+
 
 def read_jsonl(path: Path) -> list[dict]:
     if not path.exists():
@@ -33,15 +35,23 @@ def parse_time(value: str | None) -> datetime | None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset", required=True)
-    ap.add_argument("--runs", required=True)
+    add_project_arg(ap)
+    ap.add_argument("--dataset", default=None)
+    ap.add_argument("--runs", default=None)
     ap.add_argument("--hint-types", nargs="+", required=True)
     ap.add_argument("--max-tokens", type=int, default=None)
     args = ap.parse_args()
+    paths = resolve_project_paths(
+        ap,
+        args,
+        [("dataset", "--dataset"), ("runs", "--runs")],
+    )
+    dataset_path = args.dataset or str(paths.dataset)
+    runs_path = args.runs or str(paths.runs)
 
     now = datetime.now(timezone.utc)
-    dataset = read_jsonl(Path(args.dataset))
-    runs = read_jsonl(Path(args.runs))
+    dataset = read_jsonl(Path(dataset_path))
+    runs = read_jsonl(Path(runs_path))
     run_ids = [r.get("run_id") for r in runs]
     unique_ids = set(run_ids)
     expected = len(dataset) * len(args.hint_types)

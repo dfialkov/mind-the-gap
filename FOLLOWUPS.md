@@ -1,2 +1,3 @@
 * Does the method generalize to other types of unfaithfulness to CoT? The questions chosen for this experiment were intentionally "morally-loaded", and the model itself was chosen for a moderate-sized gap between CoT acknowledgement and CoT faithfulness - how far does this method generalize?
 * Do DoM to see if we can identify an "unfaithfulness to CoT" feature?
+* Sometimes, the model answers "super-honestly" - it picks the same answer as the baseline *and* acknowledges influence. If the linear probe works, I hypothesize the deception vector we identify will be the opposite of the vector we detect when it answers like that.

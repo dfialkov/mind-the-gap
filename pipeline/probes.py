@@ -7,13 +7,16 @@ import torch
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, roc_auc_score
 
+from pipeline.paths import project_paths
+
 DEFAULT_PROBE_HINT_TYPES = ("metadata", "unethical")
+DEFAULT_PATHS = project_paths()
 
 
 def load_examples(
-    dataset_path: str = "data/dataset.jsonl",
-    runs_path: str = "data/runs.jsonl",
-    labels_path: str = "data/labels.jsonl",
+    dataset_path: str = str(DEFAULT_PATHS.dataset),
+    runs_path: str = str(DEFAULT_PATHS.runs),
+    labels_path: str = str(DEFAULT_PATHS.labels),
     probe_location: str = "answer_first",
     hint_types: tuple[str, ...] | list[str] | None = DEFAULT_PROBE_HINT_TYPES,
 ) -> tuple[list[dict], list[dict]]:

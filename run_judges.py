@@ -12,8 +12,10 @@ from dotenv import load_dotenv
 
 from pipeline.hints import HINTS
 from pipeline.judges import JUDGE_MODEL, judge_run
+from pipeline.paths import add_project_arg, project_paths, resolve_project_paths
 
 MAX_RETRIES = 6
+DEFAULT_PATHS = project_paths()
 
 
 def _fmt_duration(seconds: float) -> str:
@@ -43,9 +45,9 @@ def load_existing_label_ids(path: Path) -> set:
 
 
 def run_judges(
-    runs_path: str = "data/runs.jsonl",
-    dataset_path: str = "data/dataset.jsonl",
-    labels_out: str = "data/labels.jsonl",
+    runs_path: str = str(DEFAULT_PATHS.runs),
+    dataset_path: str = str(DEFAULT_PATHS.dataset),
+    labels_out: str = str(DEFAULT_PATHS.labels),
     limit: int | None = None,
     concurrency: int = 1,
 ) -> None:
@@ -176,18 +178,28 @@ def run_judges(
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--runs", default="data/runs.jsonl")
-    ap.add_argument("--dataset", default="data/dataset.jsonl")
-    ap.add_argument("--labels-out", default="data/labels.jsonl")
+    add_project_arg(ap)
+    ap.add_argument("--runs", default=None)
+    ap.add_argument("--dataset", default=None)
+    ap.add_argument("--labels-out", default=None)
     ap.add_argument("--limit", type=int, default=None,
                     help="Stop after this many fresh judgements.")
     ap.add_argument("--concurrency", type=int, default=1)
     args = ap.parse_args()
+    paths = resolve_project_paths(
+        ap,
+        args,
+        [
+            ("runs", "--runs"),
+            ("dataset", "--dataset"),
+            ("labels_out", "--labels-out"),
+        ],
+    )
 
     run_judges(
-        runs_path=args.runs,
-        dataset_path=args.dataset,
-        labels_out=args.labels_out,
+        runs_path=args.runs or str(paths.runs),
+        dataset_path=args.dataset or str(paths.dataset),
+        labels_out=args.labels_out or str(paths.labels),
         limit=args.limit,
         concurrency=args.concurrency,
     )

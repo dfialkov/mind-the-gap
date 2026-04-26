@@ -12,6 +12,9 @@ from huggingface_hub import InferenceClient, get_token
 
 from pipeline.hints import ALL_HINT_TYPES, build_user_message
 from pipeline.model_config import thinking_boundary_for_model
+from pipeline.paths import add_project_arg, project_paths, resolve_project_paths
+
+DEFAULT_PATHS = project_paths()
 
 
 def _fmt_duration(seconds: float) -> str:
@@ -74,8 +77,8 @@ def generate_answers(
     provider: str | None = None,
     endpoint_url: str | None = None,
     hint_types: list[str] | None = None,
-    dataset_path: str = "data/dataset.jsonl",
-    runs_out: str = "data/runs.jsonl",
+    dataset_path: str = str(DEFAULT_PATHS.dataset),
+    runs_out: str = str(DEFAULT_PATHS.runs),
     api_key: str | None = None,
     max_tokens: int = 8192,
     temperature: float = 0.6,
@@ -203,8 +206,9 @@ def main():
     ap.add_argument("--endpoint-url", default=None,
                     help="Dedicated HF Inference Endpoint/OpenAI-compatible base URL.")
     ap.add_argument("--hint-types", nargs="+", default=list(ALL_HINT_TYPES))
-    ap.add_argument("--dataset", default="data/dataset.jsonl")
-    ap.add_argument("--runs-out", default="data/runs.jsonl")
+    add_project_arg(ap)
+    ap.add_argument("--dataset", default=None)
+    ap.add_argument("--runs-out", default=None)
     ap.add_argument("--api-key", default=None)
     ap.add_argument("--max-tokens", type=int, default=8192)
     ap.add_argument("--temperature", type=float, default=0.6)
@@ -215,14 +219,19 @@ def main():
     ap.add_argument("--thinking-boundary", default=None,
                     help="Override the model-family thinking/response boundary.")
     args = ap.parse_args()
+    paths = resolve_project_paths(
+        ap,
+        args,
+        [("dataset", "--dataset"), ("runs_out", "--runs-out")],
+    )
 
     generate_answers(
         model_id=args.model,
         provider=args.provider,
         endpoint_url=args.endpoint_url,
         hint_types=args.hint_types,
-        dataset_path=args.dataset,
-        runs_out=args.runs_out,
+        dataset_path=args.dataset or str(paths.dataset),
+        runs_out=args.runs_out or str(paths.runs),
         api_key=args.api_key,
         max_tokens=args.max_tokens,
         temperature=args.temperature,

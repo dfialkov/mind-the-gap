@@ -33,15 +33,17 @@ ml-project/
 │   ├── judges.py           # Claude-API binary classifiers (CoT-ack, answer-ack)
 │   └── probes.py           # per-layer logistic-regression training + eval
 ├── build_dataset.py        # script: emit dataset.jsonl
-├── generate_answers.py     # script: API-generate responses into runs.jsonl
+├── generate_answers.py     # script: API-generate responses into project runs
 ├── extract_activations.py  # script: local forward passes, grouped by model
-├── run_judges.py           # script: iterate, call pipeline.judges, append to labels.jsonl
+├── run_judges.py           # script: iterate, call pipeline.judges, append project labels
 ├── train_probes.py         # script: load + filter + train 49 probes + plot
 └── data/
-    ├── dataset.jsonl       # one row per (question, hint) plan entry
-    ├── runs.jsonl          # append-only; one row per completed inference run
-    ├── labels.jsonl        # append-only; one row per judged run
-    └── activations/        # {question-id}-{hint-type}.pt files, one per question. For baseline runs, hint-type is none.
+    ├── datasets/{project}.jsonl       # one row per (question, hint) plan entry
+    ├── runs/{project}.jsonl           # append-only; one row per completed inference run
+    ├── labels/{project}.jsonl         # append-only; one row per judged run
+    ├── activations/{project}/         # {probe-location}-{question-id}-{hint-type}.pt files
+    ├── probe_results/{project}.json
+    └── batch_states/{project}.json
 ```
 
 ## Key Design Decisions
@@ -74,8 +76,8 @@ Each template function takes `(target, subject)` and returns the hint string. Vi
 ### Answer generation + activation extraction (`generate_answers.py`, `extract_activations.py`, `pipeline/inference.py`)
 
 Generation and activation extraction are deliberately split:
-- `generate_answers.py` calls Hugging Face Inference Providers and writes `runs.jsonl`.
-- `extract_activations.py` reads `runs.jsonl`, groups pending runs by recorded generation model, loads each local activation model once, and writes `data/activations/*`.
+- `generate_answers.py` calls Hugging Face Inference Providers and writes `data/runs/{project}.jsonl`.
+- `extract_activations.py` reads project runs, groups pending runs by recorded generation model, loads each local activation model once, and writes `data/activations/{project}/*`.
 
 **Probe position (single):** the "last-whitespace-before-first-content-token" position — the residual whose next-token logit produces the first real response word. We hypothesize that the suppression-vs-acknowledgement decision is made at the very first(real) token of the answer to a statistically significant degree. 
 
@@ -108,7 +110,7 @@ Generation and activation extraction are deliberately split:
   "hinted_response": "...",
   "end_think_pos": 1527,
   "probe_target_pos": 1530,
-  "activation_path": "data/activations/mmlu_101-unethical.pt",
+  "activation_path": "data/activations/smoke/answer_first-mmlu_101-unethical.pt",
   "model_id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",
   "timestamp": "..."
 }
@@ -210,18 +212,18 @@ Add to existing:
 
 Run each stage in order, verify:
 
-1. `python build_dataset.py --n-mmlu 20 --n-gpqa 0 --seed 103`
-   → `data/dataset.jsonl` has 20 rows, each with 4 hint_types, valid target ≠ correct, schema intact.
+1. `python build_dataset.py --project smoke --n-mmlu 20 --n-gpqa 0 --seed 103`
+   → `data/datasets/smoke.jsonl` has 20 rows, each with 4 hint_types, valid target ≠ correct, schema intact.
 
-2. `python generate_answers.py --hint-types unethical --model Qwen/Qwen3-1.7B:nscale --limit 20`
-   → `data/runs.jsonl` has generated thinking/response records.
+2. `python generate_answers.py --project smoke --hint-types unethical --model Qwen/Qwen3-1.7B:nscale --limit 20`
+   → `data/runs/smoke.jsonl` has generated thinking/response records.
 
-3. `python extract_activations.py --device mps`
-   → `data/activations/*.pt` has 20 files. Load one, verify shape `(49, 5120)` and dtype `bfloat16`.
+3. `python extract_activations.py --project smoke --device mps`
+   → `data/activations/smoke/*.pt` has 20 files. Load one, verify shape `(49, 5120)` and dtype `bfloat16`.
    → ~20–40% of runs show `influenced: true` (roughly matches paper's 33% for unethical on similar-family models).
 
-4. `python run_judges.py`
-   → `data/labels.jsonl` has 20 rows. Eyeball ~5 to confirm judge outputs look sane.
+4. `python run_judges.py --project smoke`
+   → `data/labels/smoke.jsonl` has 20 rows. Eyeball ~5 to confirm judge outputs look sane.
    → Hand-label 20 runs yourself and compute agreement; target >85%.
 
 5. `python train_probes.py`

@@ -5,6 +5,8 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+from pipeline.paths import add_project_arg, resolve_project_paths
+
 
 LETTERS = {"A", "B", "C", "D"}
 DEFAULT_PROBE_HINT_TYPES = ("metadata", "unethical")
@@ -28,17 +30,30 @@ def parse_time(value: str | None) -> datetime | None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset", required=True)
-    ap.add_argument("--runs", required=True)
-    ap.add_argument("--labels", required=True)
+    add_project_arg(ap)
+    ap.add_argument("--dataset", default=None)
+    ap.add_argument("--runs", default=None)
+    ap.add_argument("--labels", default=None)
     ap.add_argument("--probe-hint-types", nargs="+", default=list(DEFAULT_PROBE_HINT_TYPES))
     args = ap.parse_args()
+    paths = resolve_project_paths(
+        ap,
+        args,
+        [
+            ("dataset", "--dataset"),
+            ("runs", "--runs"),
+            ("labels", "--labels"),
+        ],
+    )
+    dataset_path = args.dataset or str(paths.dataset)
+    runs_path = args.runs or str(paths.runs)
+    labels_path = args.labels or str(paths.labels)
     probe_hint_types = set(args.probe_hint_types)
 
     now = datetime.now(timezone.utc)
-    dataset_rows = read_jsonl(Path(args.dataset))
-    runs = read_jsonl(Path(args.runs))
-    labels_rows = read_jsonl(Path(args.labels))
+    dataset_rows = read_jsonl(Path(dataset_path))
+    runs = read_jsonl(Path(runs_path))
+    labels_rows = read_jsonl(Path(labels_path))
 
     dataset = {r["question_id"]: r for r in dataset_rows}
     run_by_id = {r["run_id"]: r for r in runs}

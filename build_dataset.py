@@ -1,4 +1,4 @@
-"""Build the evaluation dataset and write atomically to data/dataset.jsonl."""
+"""Build the evaluation dataset and write atomically to a project dataset."""
 import argparse
 import json
 import os
@@ -6,13 +6,16 @@ import tempfile
 from pathlib import Path
 
 from pipeline.dataset import build_dataset
+from pipeline.paths import add_project_arg, project_paths, resolve_project_paths
+
+DEFAULT_DATASET_PATH = str(project_paths().dataset)
 
 
 def build_dataset_file(
     n_mmlu: int = 300,
     n_gpqa: int = 198,
     seed: int = 103,
-    out: str = "data/dataset.jsonl",
+    out: str = DEFAULT_DATASET_PATH,
 ) -> None:
     out_path = Path(out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -39,14 +42,16 @@ def main():
     ap.add_argument("--n-mmlu", type=int, default=300)
     ap.add_argument("--n-gpqa", type=int, default=198)
     ap.add_argument("--seed", type=int, default=103)
-    ap.add_argument("--out", default="data/dataset.jsonl")
+    add_project_arg(ap)
+    ap.add_argument("--out", default=None)
     args = ap.parse_args()
+    paths = resolve_project_paths(ap, args, [("out", "--out")])
 
     build_dataset_file(
         n_mmlu=args.n_mmlu,
         n_gpqa=args.n_gpqa,
         seed=args.seed,
-        out=args.out,
+        out=args.out or str(paths.dataset),
     )
 
 

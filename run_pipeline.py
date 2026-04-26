@@ -4,6 +4,13 @@ import argparse
 from build_dataset import build_dataset_file
 from extract_activations import extract_activations
 from generate_answers import generate_answers
+from pipeline.paths import (
+    DEFAULT_PROJECT,
+    add_project_arg,
+    ensure_project_compatible,
+    project_paths,
+    resolve_project_paths,
+)
 from pipeline.probes import DEFAULT_PROBE_HINT_TYPES
 from run_judges import run_judges
 from train_probes import train_probes
@@ -17,6 +24,7 @@ def _kw(**kwargs):
 
 
 def run_pipeline(
+    project: str | None = None,
     n_mmlu: int | None = None,
     n_gpqa: int | None = None,
     seed: int | None = None,
@@ -43,6 +51,23 @@ def run_pipeline(
     probe_C: float | None = None,
     probe_hint_types: list[str] | tuple[str, ...] | None = DEFAULT_PROBE_HINT_TYPES,
 ) -> None:
+    ensure_project_compatible(
+        project,
+        [
+            ("dataset_path", dataset_path),
+            ("runs_out", runs_out),
+            ("activations_dir", activations_dir),
+            ("labels_out", labels_out),
+            ("results_out", results_out),
+        ],
+    )
+    paths = project_paths(project or DEFAULT_PROJECT)
+    dataset_path = dataset_path or str(paths.dataset)
+    runs_out = runs_out or str(paths.runs)
+    activations_dir = activations_dir or str(paths.activations_dir)
+    labels_out = labels_out or str(paths.labels)
+    results_out = results_out or str(paths.probe_results)
+
     print("=== Stage 1/5: build dataset ===")
     build_dataset_file(**_kw(
         n_mmlu=n_mmlu, n_gpqa=n_gpqa, seed=seed, out=dataset_path,
@@ -101,6 +126,7 @@ def run_pipeline(
 
 def main():
     ap = argparse.ArgumentParser()
+    add_project_arg(ap)
     ap.add_argument("--n-mmlu", type=int, default=None)
     ap.add_argument("--n-gpqa", type=int, default=None)
     ap.add_argument("--seed", type=int, default=None)
@@ -134,6 +160,17 @@ def main():
     ap.add_argument("--probe-hint-types", nargs="+", default=None,
                     help="Hint types to include in probe examples. Use 'all' for every non-baseline hint.")
     args = ap.parse_args()
+    paths = resolve_project_paths(
+        ap,
+        args,
+        [
+            ("dataset", "--dataset"),
+            ("runs_out", "--runs-out"),
+            ("activations_dir", "--activations-dir"),
+            ("labels_out", "--labels-out"),
+            ("results_out", "--results-out"),
+        ],
+    )
     if args.probe_hint_types == ["all"]:
         probe_hint_types = None
     elif args.probe_hint_types is None:
@@ -145,12 +182,12 @@ def main():
         n_mmlu=args.n_mmlu,
         n_gpqa=args.n_gpqa,
         seed=args.seed,
-        dataset_path=args.dataset,
+        dataset_path=args.dataset or str(paths.dataset),
         generation_model_id=args.generation_model,
         activation_model_id=args.activation_model,
         hint_types=args.hint_types,
-        runs_out=args.runs_out,
-        activations_dir=args.activations_dir,
+        runs_out=args.runs_out or str(paths.runs),
+        activations_dir=args.activations_dir or str(paths.activations_dir),
         provider=args.provider,
         endpoint_url=args.endpoint_url,
         api_key=args.api_key,
@@ -160,11 +197,11 @@ def main():
         concurrency=args.concurrency,
         thinking_boundary=args.thinking_boundary,
         device=args.device,
-        labels_out=args.labels_out,
+        labels_out=args.labels_out or str(paths.labels),
         generation_limit=args.generation_limit,
         activation_limit=args.activation_limit,
         judge_limit=args.judge_limit,
-        results_out=args.results_out,
+        results_out=args.results_out or str(paths.probe_results),
         probe_C=args.probe_C,
         probe_hint_types=probe_hint_types,
     )

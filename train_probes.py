@@ -1,20 +1,24 @@
 """Train per-layer logistic-regression probes for CoT->answer suppression."""
 import argparse
 import json
+from pathlib import Path
 
 from pipeline.inference import PROBE_LOCATIONS
+from pipeline.paths import add_project_arg, project_paths, resolve_project_paths
 from pipeline.probes import (
     DEFAULT_PROBE_HINT_TYPES,
     load_examples,
     train_per_layer_probes,
 )
 
+DEFAULT_PATHS = project_paths()
+
 
 def train_probes(
-    dataset_path: str = "data/dataset.jsonl",
-    runs_path: str = "data/runs.jsonl",
-    labels_path: str = "data/labels.jsonl",
-    results_out: str = "data/probe_results.json",
+    dataset_path: str = str(DEFAULT_PATHS.dataset),
+    runs_path: str = str(DEFAULT_PATHS.runs),
+    labels_path: str = str(DEFAULT_PATHS.labels),
+    results_out: str = str(DEFAULT_PATHS.probe_results),
     seed: int = 103,
     C: float = 1.0,
     hint_types: tuple[str, ...] | list[str] | None = DEFAULT_PROBE_HINT_TYPES,
@@ -32,17 +36,20 @@ def train_probes(
         result["probe_hint_types"] = list(hint_types) if hint_types is not None else None
         all_results[loc] = result
 
-    with open(results_out, "w") as f:
+    results_path = Path(results_out)
+    results_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(results_path, "w") as f:
         json.dump(all_results, f, indent=2)
-    print(f"\nResults written to {results_out}")
+    print(f"\nResults written to {results_path}")
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset", default="data/dataset.jsonl")
-    ap.add_argument("--runs", default="data/runs.jsonl")
-    ap.add_argument("--labels", default="data/labels.jsonl")
-    ap.add_argument("--results-out", default="data/probe_results.json")
+    add_project_arg(ap)
+    ap.add_argument("--dataset", default=None)
+    ap.add_argument("--runs", default=None)
+    ap.add_argument("--labels", default=None)
+    ap.add_argument("--results-out", default=None)
     ap.add_argument("--seed", type=int, default=103)
     ap.add_argument("--C", type=float, default=1.0)
     ap.add_argument(
@@ -52,13 +59,23 @@ def main():
         help="Hint types to include in probe examples. Use 'all' to include every non-baseline hint.",
     )
     args = ap.parse_args()
+    paths = resolve_project_paths(
+        ap,
+        args,
+        [
+            ("dataset", "--dataset"),
+            ("runs", "--runs"),
+            ("labels", "--labels"),
+            ("results_out", "--results-out"),
+        ],
+    )
     hint_types = None if args.probe_hint_types == ["all"] else args.probe_hint_types
 
     train_probes(
-        dataset_path=args.dataset,
-        runs_path=args.runs,
-        labels_path=args.labels,
-        results_out=args.results_out,
+        dataset_path=args.dataset or str(paths.dataset),
+        runs_path=args.runs or str(paths.runs),
+        labels_path=args.labels or str(paths.labels),
+        results_out=args.results_out or str(paths.probe_results),
         seed=args.seed,
         C=args.C,
         hint_types=hint_types,

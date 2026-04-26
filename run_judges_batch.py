@@ -17,6 +17,7 @@ from pipeline.judges import (
     build_judge_message_params,
     extract_judgement,
 )
+from pipeline.paths import add_project_arg, resolve_project_paths
 
 CUSTOM_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
@@ -257,9 +258,10 @@ def list_batches(client: Anthropic, args: argparse.Namespace) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("command", choices=["submit", "poll", "wait", "list"])
-    ap.add_argument("--runs", default="data/runs.jsonl")
-    ap.add_argument("--dataset", default="data/dataset.jsonl")
-    ap.add_argument("--labels-out", default="data/labels.jsonl")
+    add_project_arg(ap)
+    ap.add_argument("--runs", default=None)
+    ap.add_argument("--dataset", default=None)
+    ap.add_argument("--labels-out", default=None)
     ap.add_argument("--state", default=None)
     ap.add_argument("--batch-id", default=None)
     ap.add_argument("--limit", type=int, default=None,
@@ -270,8 +272,26 @@ def main() -> None:
                     help="Allow submit even if the state file already has a batch id.")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
+    paths = resolve_project_paths(
+        ap,
+        args,
+        [
+            ("runs", "--runs"),
+            ("dataset", "--dataset"),
+            ("labels_out", "--labels-out"),
+            ("state", "--state"),
+        ],
+    )
+    explicit_labels_out = args.labels_out is not None
+    args.runs = args.runs or str(paths.runs)
+    args.dataset = args.dataset or str(paths.dataset)
+    args.labels_out = args.labels_out or str(paths.labels)
     if args.state is None:
-        args.state = str(default_state_path(args.labels_out))
+        args.state = (
+            str(default_state_path(args.labels_out))
+            if explicit_labels_out
+            else str(paths.batch_state)
+        )
 
     load_dotenv()
     api_key = os.getenv("ANTHROPIC_API_KEY")
