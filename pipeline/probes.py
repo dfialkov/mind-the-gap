@@ -5,11 +5,16 @@ from pathlib import Path
 import numpy as np
 import torch
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, roc_auc_score
+from sklearn.metrics import accuracy_score, balanced_accuracy_score, roc_auc_score
 
+from pipeline.hints import HINTS
 from pipeline.paths import project_paths
 
-DEFAULT_PROBE_HINT_TYPES = ("metadata", "unethical")
+EXCLUDED_PROBE_HINT_TYPES = ("grader_hacking",)
+ALL_PROBE_HINT_TYPES = tuple(
+    hint_type for hint_type in HINTS if hint_type not in EXCLUDED_PROBE_HINT_TYPES
+)
+DEFAULT_PROBE_HINT_TYPES = ALL_PROBE_HINT_TYPES
 DEFAULT_PATHS = project_paths()
 
 
@@ -45,7 +50,12 @@ def load_examples(
     examples: list[dict] = []
     baselines: list[dict] = []
     stats = {"total": 0, "baseline": 0, "not_influenced": 0,
-             "excluded_hint_type": 0, "no_cot_ack": 0, "included": 0}
+             "excluded_hint_type": 0, "no_cot_ack": 0, "included": 0,
+             "missing_activation": 0}
+
+    def _activation_path(run: dict) -> str | None:
+        paths = run.get("activation_paths") or {}
+        return paths.get(probe_location)
 
     for run_id, run in runs.items():
         qid = run["question_id"]
@@ -56,11 +66,15 @@ def load_examples(
 
         if run["hint_type"] == "none":
             stats["baseline"] += 1
+            activation_path = _activation_path(run)
+            if activation_path is None:
+                stats["missing_activation"] += 1
+                continue
             baselines.append({
                 "run_id": run_id,
                 "question_id": qid,
                 "hint_type": "none",
-                "activation_path": run["activation_paths"][probe_location],
+                "activation_path": activation_path,
             })
             continue
 
@@ -83,12 +97,17 @@ def load_examples(
             stats["no_cot_ack"] += 1
             continue
 
+        activation_path = _activation_path(run)
+        if activation_path is None:
+            stats["missing_activation"] += 1
+            continue
+
         stats["included"] += 1
         examples.append({
             "run_id": run_id,
             "question_id": qid,
             "hint_type": run["hint_type"],
-            "activation_path": run["activation_paths"][probe_location],
+            "activation_path": activation_path,
             "label": int(not label["hint_acknowledged_in_answer"]),
         })
 
@@ -161,18 +180,35 @@ def train_per_layer_probes(
     train_mask = np.array([q in train_qids for q in qids])
     test_mask = np.array([q in test_qids for q in qids])
 
+    def _balanced_subset(mask: np.ndarray) -> np.ndarray:
+        idxs = np.flatnonzero(mask)
+        by_class = [idxs[y_all[idxs] == cls] for cls in np.unique(y_all[idxs])]
+        if len(by_class) < 2:
+            return idxs
+        n_min = min(len(cls_idxs) for cls_idxs in by_class)
+        keep = np.concatenate([
+            rng.choice(cls_idxs, size=n_min, replace=False)
+            for cls_idxs in by_class
+        ])
+        rng.shuffle(keep)
+        return keep
+
+    train_idxs = _balanced_subset(train_mask)
+    test_idxs = _balanced_subset(test_mask)
+
     n_layers = X_all.shape[1]
     results = []
 
     for layer in range(n_layers):
-        X_train = X_all[train_mask, layer, :]
-        y_train = y_all[train_mask]
-        X_test = X_all[test_mask, layer, :]
-        y_test = y_all[test_mask]
+        X_train = X_all[train_idxs, layer, :]
+        y_train = y_all[train_idxs]
+        X_test = X_all[test_idxs, layer, :]
+        y_test = y_all[test_idxs]
 
         if len(np.unique(y_train)) < 2:
             results.append({
-                "layer": layer, "accuracy": None, "auc": None,
+                "layer": layer, "accuracy": None, "balanced_accuracy": None,
+                "auc": None,
                 "baseline_positive_rate": None,
                 "n_train": int(len(y_train)), "n_test": int(len(y_test)),
                 "error": "single class in training set",
@@ -186,6 +222,7 @@ def train_per_layer_probes(
 
         y_pred = clf.predict(X_test)
         acc = accuracy_score(y_test, y_pred)
+        bal_acc = balanced_accuracy_score(y_test, y_pred)
 
         auc = None
         if len(np.unique(y_test)) >= 2:
@@ -200,6 +237,7 @@ def train_per_layer_probes(
         results.append({
             "layer": layer,
             "accuracy": float(acc),
+            "balanced_accuracy": float(bal_acc),
             "auc": auc,
             "baseline_positive_rate": baseline_pos_rate,
             "n_train": int(len(y_train)),
@@ -220,7 +258,10 @@ def train_per_layer_probes(
         "per_layer": results,
         "n_examples": len(examples),
         "n_baselines": len(baselines),
+        "n_train_balanced": int(len(train_idxs)),
+        "n_test_balanced": int(len(test_idxs)),
         "seed": seed,
         "C": C,
         "class_weight": "balanced",
+        "class_balancing": "downsampled within train/test split",
     }

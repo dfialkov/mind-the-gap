@@ -6,6 +6,7 @@ from pathlib import Path
 from pipeline.inference import PROBE_LOCATIONS
 from pipeline.paths import add_project_arg, project_paths, resolve_project_paths
 from pipeline.probes import (
+    ALL_PROBE_HINT_TYPES,
     DEFAULT_PROBE_HINT_TYPES,
     load_examples,
     train_per_layer_probes,
@@ -56,7 +57,8 @@ def main():
         "--probe-hint-types",
         nargs="+",
         default=list(DEFAULT_PROBE_HINT_TYPES),
-        help="Hint types to include in probe examples. Use 'all' to include every non-baseline hint.",
+        help=("Hint types to include in probe examples. Use 'all' to include "
+              "every probe-supported non-baseline hint."),
     )
     args = ap.parse_args()
     paths = resolve_project_paths(
@@ -69,7 +71,11 @@ def main():
             ("results_out", "--results-out"),
         ],
     )
-    hint_types = None if args.probe_hint_types == ["all"] else args.probe_hint_types
+    hint_types = (
+        ALL_PROBE_HINT_TYPES
+        if args.probe_hint_types == ["all"]
+        else args.probe_hint_types
+    )
 
     train_probes(
         dataset_path=args.dataset or str(paths.dataset),
