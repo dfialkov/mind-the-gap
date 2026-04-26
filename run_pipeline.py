@@ -4,6 +4,7 @@ import argparse
 from build_dataset import build_dataset_file
 from extract_activations import extract_activations
 from generate_answers import generate_answers
+from pipeline.probes import DEFAULT_PROBE_HINT_TYPES
 from run_judges import run_judges
 from train_probes import train_probes
 
@@ -26,6 +27,7 @@ def run_pipeline(
     runs_out: str | None = None,
     activations_dir: str | None = None,
     provider: str | None = None,
+    endpoint_url: str | None = None,
     api_key: str | None = None,
     max_tokens: int | None = None,
     temperature: float | None = None,
@@ -39,6 +41,7 @@ def run_pipeline(
     judge_limit: int | None = None,
     results_out: str | None = None,
     probe_C: float | None = None,
+    probe_hint_types: list[str] | tuple[str, ...] | None = DEFAULT_PROBE_HINT_TYPES,
 ) -> None:
     print("=== Stage 1/5: build dataset ===")
     build_dataset_file(**_kw(
@@ -56,6 +59,7 @@ def run_pipeline(
         runs_out=runs_out,
         api_key=api_key,
         max_tokens=max_tokens,
+        endpoint_url=endpoint_url,
         temperature=temperature,
         top_p=top_p,
         concurrency=concurrency,
@@ -83,14 +87,16 @@ def run_pipeline(
     ))
 
     print("\n=== Stage 5/5: train probes ===")
-    train_probes(**_kw(
+    probe_kwargs = _kw(
         dataset_path=dataset_path,
         runs_path=runs_out,
         labels_path=labels_out,
         results_out=results_out,
         seed=seed,
         C=probe_C,
-    ))
+    )
+    probe_kwargs["hint_types"] = probe_hint_types
+    train_probes(**probe_kwargs)
 
 
 def main():
@@ -106,6 +112,8 @@ def main():
     ap.add_argument("--activations-dir", default=None)
     ap.add_argument("--provider", default=None,
                     help="HF inference provider. Overrides a ':provider' model suffix.")
+    ap.add_argument("--endpoint-url", default=None,
+                    help="Dedicated HF Inference Endpoint/OpenAI-compatible base URL.")
     ap.add_argument("--api-key", default=None)
     ap.add_argument("--max-tokens", type=int, default=None)
     ap.add_argument("--temperature", type=float, default=None)
@@ -123,7 +131,15 @@ def main():
                     help="Stop judging after this many fresh judgements.")
     ap.add_argument("--results-out", default=None)
     ap.add_argument("--probe-C", type=float, default=None)
+    ap.add_argument("--probe-hint-types", nargs="+", default=None,
+                    help="Hint types to include in probe examples. Use 'all' for every non-baseline hint.")
     args = ap.parse_args()
+    if args.probe_hint_types == ["all"]:
+        probe_hint_types = None
+    elif args.probe_hint_types is None:
+        probe_hint_types = DEFAULT_PROBE_HINT_TYPES
+    else:
+        probe_hint_types = args.probe_hint_types
 
     run_pipeline(
         n_mmlu=args.n_mmlu,
@@ -136,6 +152,7 @@ def main():
         runs_out=args.runs_out,
         activations_dir=args.activations_dir,
         provider=args.provider,
+        endpoint_url=args.endpoint_url,
         api_key=args.api_key,
         max_tokens=args.max_tokens,
         temperature=args.temperature,
@@ -149,6 +166,7 @@ def main():
         judge_limit=args.judge_limit,
         results_out=args.results_out,
         probe_C=args.probe_C,
+        probe_hint_types=probe_hint_types,
     )
 
 

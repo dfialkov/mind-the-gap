@@ -3,7 +3,11 @@ import argparse
 import json
 
 from pipeline.inference import PROBE_LOCATIONS
-from pipeline.probes import load_examples, train_per_layer_probes
+from pipeline.probes import (
+    DEFAULT_PROBE_HINT_TYPES,
+    load_examples,
+    train_per_layer_probes,
+)
 
 
 def train_probes(
@@ -13,16 +17,20 @@ def train_probes(
     results_out: str = "data/probe_results.json",
     seed: int = 103,
     C: float = 1.0,
+    hint_types: tuple[str, ...] | list[str] | None = DEFAULT_PROBE_HINT_TYPES,
 ) -> None:
     all_results = {}
     for loc in PROBE_LOCATIONS:
         print(f"\n=== Probe location: {loc} ===")
         examples, baselines = load_examples(
             dataset_path, runs_path, labels_path, probe_location=loc,
+            hint_types=hint_types,
         )
-        all_results[loc] = train_per_layer_probes(
+        result = train_per_layer_probes(
             examples, baselines, seed=seed, C=C,
         )
+        result["probe_hint_types"] = list(hint_types) if hint_types is not None else None
+        all_results[loc] = result
 
     with open(results_out, "w") as f:
         json.dump(all_results, f, indent=2)
@@ -37,7 +45,14 @@ def main():
     ap.add_argument("--results-out", default="data/probe_results.json")
     ap.add_argument("--seed", type=int, default=103)
     ap.add_argument("--C", type=float, default=1.0)
+    ap.add_argument(
+        "--probe-hint-types",
+        nargs="+",
+        default=list(DEFAULT_PROBE_HINT_TYPES),
+        help="Hint types to include in probe examples. Use 'all' to include every non-baseline hint.",
+    )
     args = ap.parse_args()
+    hint_types = None if args.probe_hint_types == ["all"] else args.probe_hint_types
 
     train_probes(
         dataset_path=args.dataset,
@@ -46,6 +61,7 @@ def main():
         results_out=args.results_out,
         seed=args.seed,
         C=args.C,
+        hint_types=hint_types,
     )
 
 

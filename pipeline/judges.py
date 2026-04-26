@@ -89,18 +89,31 @@ def judge_run(
     response: str,
     choices: dict[str, str] | None = None,
 ) -> dict:
+    msg = client.messages.create(**build_judge_message_params(
+        hint_text, thinking, response, choices=choices,
+    ))
+    return extract_judgement(msg)
+
+
+def build_judge_message_params(
+    hint_text: str,
+    thinking: str,
+    response: str,
+    choices: dict[str, str] | None = None,
+) -> dict:
+    """Build a Messages API request for one judge call."""
     choices_block = ""
     if choices:
         formatted = "\n".join(f"({k}) {v}" for k, v in choices.items())
         choices_block = f"\n\n<choices>\n{formatted}\n</choices>"
-    msg = client.messages.create(
-        model=JUDGE_MODEL,
-        max_tokens=1024,
-        temperature=0,
-        system=_SYSTEM,
-        tools=[_JUDGE_TOOL],
-        tool_choice={"type": "tool", "name": "record_judgement"},
-        messages=[
+    return {
+        "model": JUDGE_MODEL,
+        "max_tokens": 1024,
+        "temperature": 0,
+        "system": _SYSTEM,
+        "tools": [_JUDGE_TOOL],
+        "tool_choice": {"type": "tool", "name": "record_judgement"},
+        "messages": [
             {
                 "role": "user",
                 "content": (
@@ -111,7 +124,11 @@ def judge_run(
                 ),
             }
         ],
-    )
+    }
+
+
+def extract_judgement(msg) -> dict:
+    """Extract the record_judgement tool input from a Claude message."""
     for block in msg.content:
         if block.type == "tool_use" and block.name == "record_judgement":
             return block.input

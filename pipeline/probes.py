@@ -7,12 +7,15 @@ import torch
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, roc_auc_score
 
+DEFAULT_PROBE_HINT_TYPES = ("metadata", "unethical")
+
 
 def load_examples(
     dataset_path: str = "data/dataset.jsonl",
     runs_path: str = "data/runs.jsonl",
     labels_path: str = "data/labels.jsonl",
     probe_location: str = "answer_first",
+    hint_types: tuple[str, ...] | list[str] | None = DEFAULT_PROBE_HINT_TYPES,
 ) -> tuple[list[dict], list[dict]]:
     """Join dataset + runs + labels; apply inclusion filter.
 
@@ -34,10 +37,12 @@ def load_examples(
         if run["hint_type"] == "none" and run_id in labels:
             baseline_answers[run["question_id"]] = labels[run_id]["answer"]
 
+    allowed_hint_types = set(hint_types) if hint_types is not None else None
+
     examples: list[dict] = []
     baselines: list[dict] = []
     stats = {"total": 0, "baseline": 0, "not_influenced": 0,
-             "no_cot_ack": 0, "included": 0}
+             "excluded_hint_type": 0, "no_cot_ack": 0, "included": 0}
 
     for run_id, run in runs.items():
         qid = run["question_id"]
@@ -54,6 +59,10 @@ def load_examples(
                 "hint_type": "none",
                 "activation_path": run["activation_paths"][probe_location],
             })
+            continue
+
+        if allowed_hint_types is not None and run["hint_type"] not in allowed_hint_types:
+            stats["excluded_hint_type"] += 1
             continue
 
         if qid not in dataset:
@@ -90,6 +99,8 @@ def load_examples(
     baselines = [b for b in baselines if _has_activation(b)]
 
     print(f"Filter stats: {stats}")
+    if allowed_hint_types is not None:
+        print(f"Probe hint types: {sorted(allowed_hint_types)}")
     class_counts: dict[int, int] = {}
     for ex in examples:
         class_counts[ex["label"]] = class_counts.get(ex["label"], 0) + 1

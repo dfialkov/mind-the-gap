@@ -72,6 +72,7 @@ def _api_key(explicit: str | None) -> str:
 def generate_answers(
     model_id: str = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B:nscale",
     provider: str | None = None,
+    endpoint_url: str | None = None,
     hint_types: list[str] | None = None,
     dataset_path: str = "data/dataset.jsonl",
     runs_out: str = "data/runs.jsonl",
@@ -110,15 +111,24 @@ def generate_answers(
         return
 
     hf_model_id, hf_provider = _split_model_provider(model_id, provider)
+    if endpoint_url is not None and hf_provider is not None:
+        raise ValueError(
+            "--endpoint-url cannot be combined with --provider or a ':provider' "
+            "model suffix."
+        )
     boundary = thinking_boundary or thinking_boundary_for_model(hf_model_id)
-    client = InferenceClient(
-        model=hf_model_id,
-        provider=hf_provider,
-        token=_api_key(api_key),
-    )
+    if endpoint_url is not None:
+        client = InferenceClient(base_url=endpoint_url, token=_api_key(api_key))
+    else:
+        client = InferenceClient(
+            model=hf_model_id,
+            provider=hf_provider,
+            token=_api_key(api_key),
+        )
     print(
         f"Generating {len(pending)} runs via Hugging Face "
-        f"(model={hf_model_id}, provider={hf_provider or 'auto'}, "
+        f"(model={hf_model_id}, "
+        f"{'endpoint=' + endpoint_url if endpoint_url else 'provider=' + (hf_provider or 'auto')}, "
         f"concurrency={concurrency})..."
     )
 
@@ -127,6 +137,7 @@ def generate_answers(
         messages = [{"role": "user", "content": build_user_message(record, hint_type)}]
         response = client.chat_completion(
             messages=messages,
+            model=hf_model_id if endpoint_url is not None else None,
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
@@ -138,12 +149,17 @@ def generate_answers(
             "run_id": run_id,
             "question_id": record["question_id"],
             "hint_type": hint_type,
+            "correct_answer": record["correct"],
+            "target_answer": record["target"],
+            "correct_text": record["choices"][record["correct"]],
+            "target_text": record["choices"][record["target"]],
             "thinking": thinking,
             "response": final_response,
             "thinking_boundary": boundary,
             "n_tokens": getattr(response.usage, "completion_tokens", None),
             "generation_model_id": hf_model_id,
             "generation_provider": hf_provider,
+            "generation_endpoint_url": endpoint_url,
             "generation_params": {
                 "max_tokens": max_tokens,
                 "temperature": temperature,
@@ -184,6 +200,8 @@ def main():
     ap.add_argument("--model", default="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B:nscale")
     ap.add_argument("--provider", default=None,
                     help="HF inference provider. Overrides a ':provider' model suffix.")
+    ap.add_argument("--endpoint-url", default=None,
+                    help="Dedicated HF Inference Endpoint/OpenAI-compatible base URL.")
     ap.add_argument("--hint-types", nargs="+", default=list(ALL_HINT_TYPES))
     ap.add_argument("--dataset", default="data/dataset.jsonl")
     ap.add_argument("--runs-out", default="data/runs.jsonl")
@@ -201,6 +219,7 @@ def main():
     generate_answers(
         model_id=args.model,
         provider=args.provider,
+        endpoint_url=args.endpoint_url,
         hint_types=args.hint_types,
         dataset_path=args.dataset,
         runs_out=args.runs_out,

@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -46,6 +47,7 @@ def run_judges(
     dataset_path: str = "data/dataset.jsonl",
     labels_out: str = "data/labels.jsonl",
     limit: int | None = None,
+    concurrency: int = 1,
 ) -> None:
     load_dotenv()
     api_key = os.getenv("ANTHROPIC_API_KEY")
@@ -70,37 +72,37 @@ def run_judges(
     with open(runs_path) as f:
         runs = [json.loads(l) for l in f if l.strip()]
 
-    total = len(runs)
-    fresh = 0
-    n_ok = 0
+    pending: list[tuple[int, dict]] = []
     n_skipped = 0
-    n_errors = 0
-    t_start = time.time()
-
     for i, run in enumerate(runs, 1):
         run_id = run["run_id"]
         if run_id in existing:
             n_skipped += 1
             continue
-        if limit is not None and fresh >= limit:
-            print(f"--limit {limit} reached, stopping.")
+        if limit is not None and len(pending) >= limit:
             break
+        pending.append((i, run))
 
+    total = len(runs)
+    n_ok = 0
+    n_errors = 0
+    t_start = time.time()
+
+    def judge_one(item: tuple[int, dict]) -> tuple[int, str, dict | None, str | None]:
+        i, run = item
+        run_id = run["run_id"]
         record = records.get(run["question_id"])
         if record is None:
-            n_errors += 1
-            print(f"[{i}/{total}] ERROR {run_id}: question not in dataset")
-            continue
+            return i, run_id, None, "question not in dataset"
         hint_text = hint_text_for(record, run["hint_type"])
 
-        judgement = None
         for attempt in range(MAX_RETRIES):
             try:
                 judgement = judge_run(
                     client, hint_text, run["thinking"], run["response"],
                     choices=record.get("choices"),
                 )
-                break
+                return i, run_id, judgement, None
             except RateLimitError:
                 wait = 2 ** attempt
                 print(f"[{i}/{total}] {run_id}: rate limited, "
@@ -117,38 +119,55 @@ def run_judges(
                 else:
                     raise
             except Exception as e:
-                n_errors += 1
-                print(f"[{i}/{total}] ERROR {run_id}: {type(e).__name__}: {e}")
-                break
-        if judgement is None:
-            if attempt == MAX_RETRIES - 1:
-                n_errors += 1
-                print(f"[{i}/{total}] FAILED {run_id}: max retries exceeded")
-            continue
+                return i, run_id, None, f"{type(e).__name__}: {e}"
+        return i, run_id, None, "max retries exceeded"
 
-        label = {
-            "run_id": run_id,
-            **judgement,
-            "judge_model": JUDGE_MODEL,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-        with open(labels_path, "a") as f:
-            f.write(json.dumps(label) + "\n")
-        existing.add(run_id)
-        fresh += 1
-        n_ok += 1
-        elapsed = _fmt_duration(time.time() - t_start)
-        remaining = total - i
-        avg = (time.time() - t_start) / n_ok if n_ok else 0
-        eta = _fmt_duration(remaining * avg) if n_ok else "?"
-        print(
-            f"[{i}/{total}] {run_id} "
-            f"cot={judgement['hint_acknowledged_in_cot']} "
-            f"ans={judgement['hint_acknowledged_in_answer']} "
-            f"pick={judgement['answer']} "
-            f"| elapsed={elapsed} eta={eta}",
-            flush=True,
-        )
+    if not pending:
+        print("No pending judgements.")
+    else:
+        print(f"Judging {len(pending)} fresh runs (concurrency={concurrency})...")
+
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        futures = {pool.submit(judge_one, item): item for item in pending}
+        for future in as_completed(futures):
+            i, run = futures[future]
+            run_id = run["run_id"]
+            try:
+                _, _, judgement, error = future.result()
+            except Exception as e:
+                n_errors += 1
+                print(f"[{i}/{total}] ERROR {run_id}: {type(e).__name__}: {e}",
+                      flush=True)
+                continue
+
+            if error is not None or judgement is None:
+                n_errors += 1
+                print(f"[{i}/{total}] ERROR {run_id}: {error}", flush=True)
+                continue
+
+            label = {
+                "run_id": run_id,
+                **judgement,
+                "judge_model": JUDGE_MODEL,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            with open(labels_path, "a") as f:
+                f.write(json.dumps(label) + "\n")
+            existing.add(run_id)
+            n_ok += 1
+            elapsed = _fmt_duration(time.time() - t_start)
+            remaining = len(pending) - n_ok - n_errors
+            avg = (time.time() - t_start) / n_ok if n_ok else 0
+            eta = _fmt_duration(remaining * avg) if n_ok else "?"
+            print(
+                f"[{i}/{total}] {run_id} "
+                f"cot={judgement['hint_acknowledged_in_cot']} "
+                f"ans={judgement['hint_acknowledged_in_answer']} "
+                f"pick={judgement['answer']} "
+                f"| {n_ok}/{len(pending)} fresh "
+                f"| elapsed={elapsed} eta={eta}",
+                flush=True,
+            )
 
     elapsed = _fmt_duration(time.time() - t_start)
     print(f"\nJudging done: {n_ok} ok, {n_errors} errors, "
@@ -162,6 +181,7 @@ def main():
     ap.add_argument("--labels-out", default="data/labels.jsonl")
     ap.add_argument("--limit", type=int, default=None,
                     help="Stop after this many fresh judgements.")
+    ap.add_argument("--concurrency", type=int, default=1)
     args = ap.parse_args()
 
     run_judges(
@@ -169,6 +189,7 @@ def main():
         dataset_path=args.dataset,
         labels_out=args.labels_out,
         limit=args.limit,
+        concurrency=args.concurrency,
     )
 
 
