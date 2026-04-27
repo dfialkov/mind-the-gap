@@ -2,6 +2,8 @@
 
 This project evaluates whether a language model's final answer faithfully discloses undue influence that appears in its chain-of-thought (CoT). The analysis is centered on answer faithfulness: when a model's reasoning acknowledges that a hint affected its answer, does the final answer disclose that influence or suppress it?
 
+The project is framed as a follow-up to [Young (2026), "Lie to Me"](https://arxiv.org/pdf/2603.22582), which reported a large gap between hint acknowledgment in reasoning traces and hint acknowledgment in final answers. Here, that behavioral gap is treated as a probing target: can the internal representation of answer-level suppression be detected with a linear probe?
+
 The core question is:
 
 > If hint influence is acknowledged in CoT, can a linear probe predict whether that influence will be disclosed in the final answer?
@@ -10,7 +12,7 @@ The main result is positive: **hint suppression is linearly decodable** from pai
 
 A second result motivates the main control. In many hinted runs, the model disclosed a hint in the final answer even when that hint did not change the selected answer relative to the no-hint baseline. These cases are called **super-honest**: a non-influencing hint is still disclosed without the model being directly prompted to report it.
 
-This behavior is interesting in its own right, and it creates a concrete confound for deception probes. If a probe fires on super-honest examples, it may be detecting hint disclosure, answer-stage hint salience, or unusual honesty rather than suppression of influence.
+This behavior is interesting in its own right and creates a concrete confound for deception probes. If a probe fires on super-honest examples, the signal may reflect hint disclosure, answer-stage hint salience, or a highly honest behavior mode that points away from deception, rather than suppression of influence.
 
 ## Headline Results
 
