@@ -2,7 +2,7 @@
 
 This project evaluates whether a language model's final answer faithfully discloses undue influence that appears in its chain-of-thought (CoT). The analysis is centered on answer faithfulness: when a model's reasoning acknowledges that a hint affected its answer, does the final answer disclose that influence or suppress it?
 
-The project is framed as a follow-up to [Young (2026), "Lie to Me"](https://arxiv.org/pdf/2603.22582), which reported a large gap between hint acknowledgment in reasoning traces and hint acknowledgment in final answers. Here, that behavioral gap is treated as a probing target: can the internal representation of answer-level suppression be detected with a linear probe?
+The project is a follow-up to [Young (2026), "Lie to Me"](https://arxiv.org/pdf/2603.22582), which reported a large gap between hint acknowledgment in reasoning traces and hint acknowledgment in final answers. Here, that behavioral gap is treated as a probing target: can the internal representation of answer-level suppression be detected with a linear probe?
 
 The core question is:
 
@@ -30,6 +30,8 @@ This representation controls for question content and ordinary baseline answer d
 | `think_last` | **0.901** | **0.713 TPR @ <=20% super-honest FPR** |
 
 The fixed-layer stability metric is measured by selecting one layer from the original split, holding that layer fixed, and averaging performance over 30 random question splits. A value of `0.731 TPR @ <=20% super-honest FPR` means that 73.1% of held-out hint-suppression cases were detected while no more than 20% of super-honest controls were falsely flagged.
+
+![Paired-difference probe stability across answer and CoT token positions](docs/images/probe_stability.png)
 
 ## Task Framing
 
@@ -71,6 +73,10 @@ hint present
 ```
 
 These examples are not suppression. They disclose more than strict task performance requires: the hint was seen and mentioned, but it did not alter the final answer relative to the baseline. False positives on this set are therefore informative, not merely noise. They show whether a would-be deception probe is reacting to disclosure language or hinted-answer dynamics instead of the target gap between CoT influence and answer disclosure.
+
+The distribution below shows this control directly. `Faithful influenced` examples are the non-suppression counterpart: the hint changed the answer, and that influence was disclosed. The super-honest examples mostly score below true hint-suppression examples, but their right tail defines the false-positive surface used for calibration.
+
+![Probe score distributions for hint suppression, faithful influenced examples, and super-honest controls](docs/images/super_honest_scores.png)
 
 The key calibrated metric is:
 
@@ -200,6 +206,12 @@ The paired-difference and stability analyses live in:
 
 ```text
 analysis.ipynb
+```
+
+Regenerate the README figures from local artifacts:
+
+```bash
+python scripts/generate_readme_figures.py
 ```
 
 ## Limitations
