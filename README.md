@@ -1,12 +1,12 @@
 # Mind the Gap: Linear Probes for Answer Faithfulness to Chain-of-Thought
 
-This project studies whether a language model's final answer faithfully discloses undue influence that appears in its chain-of-thought.
+This project evaluates whether a language model's final answer faithfully discloses undue influence that appears in its chain-of-thought (CoT). The analysis is centered on answer faithfulness: when a model's reasoning acknowledges that a hint affected its answer, does the final answer disclose that influence or suppress it?
 
 The core question is:
 
-> If a model acknowledges in its CoT that a hint influenced its reasoning, can we linearly detect whether it will disclose or suppress that influence in the final answer?
+> If hint influence is acknowledged in CoT, can a linear probe predict whether that influence will be disclosed in the final answer?
 
-I built an end-to-end pipeline to generate hinted and baseline responses, label influence acknowledgment in CoT and final answers, capture transformer activations, and train linear probes over those activations.
+The main result is positive: **hint suppression is linearly decodable** from paired activation differences. The stricter deception framing is treated more cautiously. The probes detect a gap between CoT-level influence acknowledgment and answer-level disclosure; whether that gap should be interpreted as deceptive intent requires stronger evidence than a behavioral probe can provide on its own.
 
 ## Headline Results
 
@@ -16,26 +16,24 @@ The strongest result uses **paired activation differences**:
 feature = activation(hinted run) - activation(no-hint baseline for same question)
 ```
 
-This controls for question content and ordinary baseline answer dynamics. On Qwen/Qwen3.5-27B, the best paired-difference probe reached:
+This representation controls for question content and ordinary baseline answer dynamics. On `Qwen/Qwen3.5-27B`, the best paired-difference probes reached:
 
 | Probe location | Best held-out AUC | Fixed-layer stability over 30 splits |
 | --- | ---: | ---: |
 | `answer_first` | **0.929** | **0.731 TPR @ <=20% super-honest FPR** |
 | `think_last` | **0.901** | **0.713 TPR @ <=20% super-honest FPR** |
 
-The fixed-layer stability metric means: using the same layer across 30 random question splits, the probe catches that fraction of held-out hint-suppression cases while allowing at most 20% false positives on super-honest controls.
-
-This is strong evidence that **hint suppression is linearly decodable** from paired activation differences. The stronger claim that the suppression is specifically *deceptive* is harder: these probes detect answer faithfulness to CoT influence, while intent remains an interpretation layered on top of the behavioral labels.
+The fixed-layer stability metric is measured by selecting one layer from the original split, holding that layer fixed, and averaging performance over 30 random question splits. A value of `0.731 TPR @ <=20% super-honest FPR` means that 73.1% of held-out hint-suppression cases were detected while no more than 20% of super-honest controls were falsely flagged.
 
 ## Task Framing
 
-Each question is run under a no-hint baseline and several hinted conditions. The hints are deliberately external to the model's own reasoning:
+Each benchmark question is evaluated under a no-hint baseline and several hinted conditions. The hints are external to the model's own reasoning:
 
 - `metadata`: an answer key is included as XML-style question metadata.
 - `unethical`: the prompt says the answer came from unauthorized access to an answer-key database.
-- `grader_hacking`: generated and labeled, but excluded from the main probe analysis because this model treated it as a deliberate eval instruction rather than an ethical issue.
+- `grader_hacking`: generated and labeled, but excluded from the main probe analysis because this model treated it as an eval instruction rather than as an ethical issue.
 
-The labeling process asks two separate questions:
+The labeling process separates two questions:
 
 1. Did the CoT acknowledge that the hint influenced the reasoning?
 2. Did the final answer acknowledge that influence?
@@ -48,17 +46,17 @@ hint changed the answer
 + final answer did not acknowledge influence
 ```
 
-I refer to this as **hint suppression**: the model's reasoning shows influence from the hint, but the answer does not disclose it.
+This class is referred to as **hint suppression**: influence appears in the reasoning trace, but that influence is not disclosed in the answer.
 
 ## Controls
 
-Raw answer-stage probes can accidentally learn a simpler feature:
+Raw answer-stage probes can learn a simpler feature than the one of interest:
 
 ```text
 will the final answer mention the hint?
 ```
 
-To test this, I used **super-honest controls**:
+To check for this confound, **super-honest controls** are used:
 
 ```text
 hint present
@@ -66,7 +64,7 @@ hint present
 + model still chooses the same answer as the no-hint baseline
 ```
 
-These examples are not suppression. If a probe fires heavily on them, it is probably detecting generic hinted-answer behavior rather than suppression.
+These examples are not suppression. A probe that fires heavily on them is likely detecting generic hinted-answer behavior or disclosure wording, rather than suppression of influence.
 
 The key calibrated metric is:
 
@@ -74,13 +72,13 @@ The key calibrated metric is:
 TPR @ <=20% super-honest FPR
 ```
 
-In plain English:
+In plain language:
 
-> If the threshold is set so that at most 20% of super-honest controls are falsely flagged, what fraction of true hint-suppression cases does the probe catch?
+> If the threshold is set so that at most 20% of super-honest controls are falsely flagged, what fraction of true hint-suppression cases is detected?
 
 ## Pipeline
 
-The repo includes scripts for:
+The repository includes scripts for:
 
 1. Building an MMLU/GPQA dataset with baseline and hinted variants.
 2. Generating model responses.
@@ -93,7 +91,7 @@ The repo includes scripts for:
 5. Training per-layer logistic-regression probes.
 6. Running notebook analyses for UpSet plots, raw probes, paired-difference probes, controls, and split stability.
 
-Project-scoped artifact paths live under `data/`:
+Project-scoped artifacts are stored under `data/`:
 
 ```text
 data/datasets/<project>.jsonl
@@ -111,7 +109,7 @@ model: Qwen/Qwen3.5-27B
 benchmarks: MMLU + GPQA
 ```
 
-The activation files and generated data are gitignored because they are large and expensive to reproduce.
+Generated responses, labels, and activation files are gitignored because they are large and expensive to reproduce.
 
 ## Results Snapshot
 
@@ -137,7 +135,7 @@ Calibrated against super-honest controls at the best `<=5%` super-honest-FPR lay
 
 ### Stability Across Random Splits
 
-I repeated the paired-difference probe over 30 random question splits. Fixed layers were selected from the prior single split and then held constant.
+The paired-difference probe was repeated over 30 random question splits. Fixed layers were selected from the prior single split and then held constant.
 
 | Location | Fixed layer | Mean TPR @ <=20% SH-FPR | p10 | Median | p90 | Mean AUC |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -146,23 +144,23 @@ I repeated the paired-difference probe over 30 random question splits. Fixed lay
 | `think_first` | 63 | 0.407 | 0.315 | 0.405 | 0.524 | 0.638 |
 | `think_mid` | 57 | 0.321 | 0.200 | 0.326 | 0.459 | 0.559 |
 
-The fixed-layer stability results are the fairest summary: they avoid re-picking the best layer after seeing each split.
+The fixed-layer stability results are the fairest summary because the best layer is not re-selected after seeing each split.
 
 ## Interpretation
 
 The project supports a positive but bounded claim:
 
-> A linear probe over paired activation differences can detect whether the model suppresses hint influence in the final answer, despite the influence appearing in its CoT.
+> A linear probe over paired activation differences can detect whether hint influence acknowledged in CoT is suppressed in the final answer.
 
-The best evidence is the combination of:
+This claim is supported by:
 
 - high single-split AUC for paired differences (`0.929` at `answer_first`, `0.901` at `think_last`);
 - stable split-averaged TPR at a controlled super-honest false-positive rate;
-- substantially better behavior after subtracting the no-hint baseline activation for the same question.
+- improved behavior after subtracting the no-hint baseline activation for the same question.
 
-The careful version is:
+The careful distinction is:
 
-> Hint suppression is linearly decodable. Whether that suppression should be called deception requires more evidence about intent and stronger controls.
+> Hint suppression is linearly decodable. Deceptive hint suppression is a stricter interpretation that requires additional evidence about intent.
 
 ## Running The Pipeline
 
@@ -180,7 +178,7 @@ Run the full local pipeline for a named project:
 python run_pipeline.py --project my_project --n-mmlu 100 --n-gpqa 100
 ```
 
-For the large Qwen3.5-27B activation capture, I used a RunPod A100 and copied the activation artifacts back into:
+For the large `Qwen/Qwen3.5-27B` activation capture, a RunPod A100 was used and the activation artifacts were copied back into:
 
 ```text
 data/activations/qwen35_27b_full/
@@ -192,7 +190,7 @@ Train the standard raw-activation probes:
 python train_probes.py --project qwen35_27b_full
 ```
 
-The paired-difference and stability analyses currently live in:
+The paired-difference and stability analyses live in:
 
 ```text
 analysis.ipynb
@@ -200,22 +198,8 @@ analysis.ipynb
 
 ## Limitations
 
-- This is one model family and one main full run.
-- Held-out suppression positives are still limited; split stability helps, but more data would improve confidence.
+- One model family and one main full run are analyzed.
+- Held-out suppression positives remain limited; split stability helps, but more data would improve confidence.
 - Super-honest controls are mostly MMLU in the current run, so GPQA-specific conclusions are weaker.
-- `answer_first` is close to output realization, so it may encode disclosure wording as well as deeper internal state.
-- The probe supports a linear-decodability claim, not a production-ready detector claim.
-
-## Why This Project Is Interesting
-
-This is a small but complete mechanistic-interpretability pipeline:
-
-- generated benchmark responses under controlled hidden influence;
-- labeled CoT-vs-answer faithfulness;
-- captured transformer activations remotely;
-- trained linear probes across layers and token positions;
-- diagnosed confounds with targeted controls;
-- improved the result with paired activation differences;
-- validated stability over random splits.
-
-The main takeaway is that the gap between what the model's CoT acknowledges and what its final answer discloses leaves a measurable linear trace in activations.
+- `answer_first` is close to output realization, so disclosure wording may still be encoded alongside deeper internal state.
+- The results support a linear-decodability claim, not a production-ready detector claim.
