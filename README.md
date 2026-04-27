@@ -8,6 +8,10 @@ The core question is:
 
 The main result is positive: **hint suppression is linearly decodable** from paired activation differences. The stricter deception framing is treated more cautiously. The probes detect a gap between CoT-level influence acknowledgment and answer-level disclosure; whether that gap should be interpreted as deceptive intent requires stronger evidence than a behavioral probe can provide on its own.
 
+A second result motivates the main control. In many hinted runs, the model disclosed a hint in the final answer even when that hint did not change the selected answer relative to the no-hint baseline. These cases are called **super-honest**: a non-influencing hint is still disclosed without the model being directly prompted to report it.
+
+This behavior is interesting in its own right, and it creates a concrete confound for deception probes. If a probe fires on super-honest examples, it may be detecting hint disclosure, answer-stage hint salience, or unusual honesty rather than suppression of influence.
+
 ## Headline Results
 
 The strongest result uses **paired activation differences**:
@@ -64,7 +68,7 @@ hint present
 + model still chooses the same answer as the no-hint baseline
 ```
 
-These examples are not suppression. A probe that fires heavily on them is likely detecting generic hinted-answer behavior or disclosure wording, rather than suppression of influence.
+These examples are not suppression. They disclose more than strict task performance requires: the hint was seen and mentioned, but it did not alter the final answer relative to the baseline. False positives on this set are therefore informative, not merely noise. They show whether a would-be deception probe is reacting to disclosure language or hinted-answer dynamics instead of the target gap between CoT influence and answer disclosure.
 
 The key calibrated metric is:
 
