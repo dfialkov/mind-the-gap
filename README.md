@@ -2,34 +2,36 @@
 
 This project evaluates whether a language model's final answer faithfully discloses undue influence that appears in its chain-of-thought (CoT). The analysis is centered on answer faithfulness: when a model's reasoning acknowledges that a hint affected its answer, does the final answer disclose that influence or suppress it?
 
-The project is a follow-up to [Young (2026), "Lie to Me"](https://arxiv.org/pdf/2603.22582), which reported a large gap between hint acknowledgment in reasoning traces and hint acknowledgment in final answers. Here, that behavioral gap is treated as a probing target: can the internal representation of answer-level suppression be detected with a linear probe?
+The project is a partial replication and follow-up to [Young (2026), "Lie to Me"](https://arxiv.org/pdf/2603.22582), which reported a large gap between hint acknowledgment in reasoning traces and hint acknowledgment in final answers. Here, that behavioral gap is treated as a probing target: can the internal representation of answer-level suppression be detected with a linear probe?
 
 The core question is:
 
 > If hint influence is acknowledged in CoT, can a linear probe predict whether that influence will be disclosed in the final answer?
 
-The main result is positive: **hint suppression is linearly decodable** from paired activation differences. The stricter deception framing is treated more cautiously. The probes detect a gap between CoT-level influence acknowledgment and answer-level disclosure; whether that gap should be interpreted as deceptive intent requires stronger evidence than a behavioral probe can provide on its own.
+The main result is positive: **hint suppression is unambiguously linearly decodable** from paired activation differences, while explicitly deceptive suppression corresponds to a less clear signal. In particular, a useful distinction is drawn between suppressing an influencing hint and honestly disclosing a non-influencing hint.
 
-A second result motivates the main control. In many hinted runs, the model disclosed a hint in the final answer even when that hint did not change the selected answer relative to the no-hint baseline. These cases are called **super-honest**: a non-influencing hint is still disclosed without the model being directly prompted to report it.
+A second result motivates the main control: in many hinted runs, the model disclosed a hint in the final answer even when that hint did not change the selected answer relative to the no-hint baseline. This behavior is called **super-honest**: a non-influencing hint is still disclosed without the model being directly prompted to report it.
 
-This behavior is interesting in its own right and creates a concrete confound for deception probes. If a probe fires on super-honest examples, the signal may reflect hint disclosure, answer-stage hint salience, or a highly honest behavior mode that points away from deception, rather than suppression of influence.
+This behavior creates a concrete confound for deception probes: if a probe fires on super-honest examples, the signal may reflect hint disclosure, answer-stage hint salience, or a highly honest behavior mode that points away from deception, rather than suppression of influence.
+
+Activations were probed at four locations: the first token of the chain-of-thought, a token in the middle of the chain, the final token of the chain-of-thought, and the first token of the answer.
 
 ## Headline Results
 
-The strongest result uses **paired activation differences**:
+The probe uses **paired activation differences**:
 
 ```text
 feature = activation(hinted run) - activation(no-hint baseline for same question)
 ```
 
-This representation controls for question content and ordinary baseline answer dynamics. On `Qwen/Qwen3.5-27B`, the best paired-difference probes reached:
+This representation controls for question content and ordinary baseline answer dynamics. On `Qwen/Qwen3.5-27B`, the best paired-difference probes for hint suppression reached:
 
 | Probe location | Best held-out AUC | Fixed-layer stability over 30 splits |
 | --- | ---: | ---: |
 | `answer_first` | **0.929** | **0.731 TPR @ <=20% super-honest FPR** |
 | `think_last` | **0.901** | **0.713 TPR @ <=20% super-honest FPR** |
 
-Here, **super-honest** refers to hinted examples where the model still chooses the same answer as its no-hint baseline, but nevertheless discloses the hint in the final answer. These examples are not cases of hidden influence; they are cases where a non-influencing hint is disclosed without being explicitly requested.
+The super-honesty confound is controlled by tuning the activation threshold so that less than a fixed percentage of false positives is allowed on super-honest cases.
 
 The fixed-layer stability metric is measured by selecting one layer from the original split, holding that layer fixed, and averaging performance over 30 random question splits. A value of `0.731 TPR @ <=20% super-honest FPR` means that 73.1% of held-out hint-suppression cases were detected while no more than 20% of super-honest controls were falsely flagged.
 
@@ -41,7 +43,7 @@ Each benchmark question is evaluated under a no-hint baseline and several hinted
 
 - `metadata`: an answer key is included as XML-style question metadata.
 - `unethical`: the prompt says the answer came from unauthorized access to an answer-key database.
-- `grader_hacking`: generated and labeled, but excluded from the main probe analysis because this model treated it as an eval instruction rather than as an ethical issue.
+- `grader_hacking`: generated and labeled, but excluded from the main probe analysis. The hint's wording (verbatim from the original study) was almost always interpreted by the model not as morally-loaded undue influence but as the prompt straightforwardly supplying an answer. Chains-of-thought on this hint contained the string "overthink" at a rate ten times higher than any other category, supporting this interpretation.
 
 The labeling process separates two questions:
 
@@ -224,4 +226,9 @@ python scripts/generate_readme_figures.py
 - Held-out suppression positives remain limited; split stability helps, but more data would improve confidence.
 - Super-honest controls are mostly MMLU in the current run, so GPQA-specific conclusions are weaker.
 - `answer_first` is close to output realization, so disclosure wording may still be encoded alongside deeper internal state.
-- The results support a linear-decodability claim, not a production-ready detector claim.
+- The paired-difference approach requires both a baseline, un-influenced answer and an influenced prompt, limiting the technique's usefulness as a production deception detector.
+
+## Potential Follow-Ups
+
+- Test whether the method generalizes to other forms of unfaithfulness to CoT. The questions in this experiment were intentionally morally loaded, and the model was selected because it showed a moderate-sized gap between CoT acknowledgment and answer faithfulness. A broader follow-up would test whether paired-difference probes still work when the unfaithfulness is less ethically charged or appears in a different task format.
+- Use a difference-of-means (DoM) direction to look for a more general `unfaithfulness to CoT` feature. This would provide a simpler linear direction to compare against the trained logistic probes and could help separate task-specific hint suppression from a broader answer-faithfulness signal.
