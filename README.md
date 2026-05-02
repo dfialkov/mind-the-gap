@@ -29,6 +29,8 @@ This representation controls for question content and ordinary baseline answer d
 | `answer_first` | **0.929** | **0.731 TPR @ <=20% super-honest FPR** |
 | `think_last` | **0.901** | **0.713 TPR @ <=20% super-honest FPR** |
 
+Here, **super-honest** refers to hinted examples where the model still chooses the same answer as its no-hint baseline, but nevertheless discloses the hint in the final answer. These examples are not cases of hidden influence; they are cases where a non-influencing hint is disclosed without being explicitly requested.
+
 The fixed-layer stability metric is measured by selecting one layer from the original split, holding that layer fixed, and averaging performance over 30 random question splits. A value of `0.731 TPR @ <=20% super-honest FPR` means that 73.1% of held-out hint-suppression cases were detected while no more than 20% of super-honest controls were falsely flagged.
 
 ![Paired-difference probe stability across answer and CoT token positions](docs/images/probe_stability.png)
@@ -72,7 +74,9 @@ hint present
 + model still chooses the same answer as the no-hint baseline
 ```
 
-These examples are not suppression. They disclose more than strict task performance requires: the hint was seen and mentioned, but it did not alter the final answer relative to the baseline. False positives on this set are therefore informative, not merely noise. They show whether a would-be deception probe is reacting to disclosure language or hinted-answer dynamics instead of the target gap between CoT influence and answer disclosure.
+These examples are not suppression. They disclose more than strict task performance requires: the hint was seen and mentioned, but it did not alter the final answer relative to the baseline. This behavior is interesting in its own right, because answer-level disclosure is triggered by a non-influencing hint without any explicit request to report that hint.
+
+False positives on this set are therefore informative, not merely noise. They show whether a would-be deception probe is reacting to disclosure language or hinted-answer dynamics instead of the target gap between CoT influence and answer disclosure.
 
 The distribution below shows this control directly. `Faithful influenced` examples are the non-suppression counterpart: the hint changed the answer, and that influence was disclosed. The super-honest examples mostly score below true hint-suppression examples, but their right tail defines the false-positive surface used for calibration.
 
